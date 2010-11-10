@@ -105,6 +105,9 @@ static const char* const valid_modargs[] = {
 
 struct a2dp_info {
     sbc_capabilities_t sbc_capabilities;
+    mpeg_capabilities_t mpeg_capabilities;
+    pa_bool_t           has_mpeg;
+
     sbc_t sbc;                           /* Codec data */
     pa_bool_t sbc_initialized;           /* Keep track if the encoder is initialized */
     size_t codesize, frame_length;       /* SBC Codesize, frame_length. We simply cache those values here */
@@ -187,6 +190,9 @@ struct userdata {
     int stream_write_type;
 
     pa_bool_t filter_added;
+
+    /* required for PASSTHROUGH profile */
+    size_t leftover_bytes;
 };
 
 enum {
@@ -230,12 +236,12 @@ static void a2dp_set_bitpool(struct userdata *u, uint8_t bitpool)
     pa_log_debug("Bitpool has changed to %u", a2dp->sbc.bitpool);
 
     u->read_block_size =
-        (u->read_link_mtu - sizeof(struct rtp_header) - sizeof(struct rtp_payload))
-        / a2dp->frame_length * a2dp->codesize;
+        ((u->read_link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
+        / a2dp->frame_length * a2dp->codesize);
 
     u->write_block_size =
-        (u->write_link_mtu - sizeof(struct rtp_header) - sizeof(struct rtp_payload))
-        / a2dp->frame_length * a2dp->codesize;
+        ((u->write_link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
+        / a2dp->frame_length * a2dp->codesize);
 
     pa_sink_set_max_request_within_thread(u->sink, u->write_block_size);
     pa_sink_set_fixed_latency_within_thread(u->sink,
@@ -678,7 +684,7 @@ static void a2dp_prepare_buffer(struct userdata *u) {
 static int a2dp_process_render(struct userdata *u) {
     struct a2dp_info *a2dp;
     struct rtp_header *header;
-    struct rtp_payload *payload;
+    struct sbc_rtp_payload *payload;
     size_t nbytes;
     void *d;
     const void *p;
@@ -700,7 +706,7 @@ static int a2dp_process_render(struct userdata *u) {
 
     a2dp = &u->a2dp;
     header = a2dp->buffer;
-    payload = (struct rtp_payload*) ((uint8_t*) a2dp->buffer + sizeof(*header));
+    payload = (struct sbc_rtp_payload*) ((uint8_t*) a2dp->buffer + sizeof(*header));
 
     frame_count = 0;
 
@@ -808,6 +814,387 @@ static int a2dp_process_render(struct userdata *u) {
     return ret;
 }
 
+
+static uint32_t uextract(uint32_t x, uint32_t position, uint32_t nbits)
+{
+    int mask;
+
+    pa_assert(position <= 31);
+    pa_assert(nbits <= 31);
+
+    x = x >> position;
+    mask = (1<<nbits)-1;
+    x = x & mask;
+
+    return x;
+}
+
+
+#define MPEG_LAYER_INDEX    4
+#define MPEG_BITRATE_INDEX 16
+#define MPEG_SAMPFREQ_INDEX 4
+#define MPEG_INDEX 2
+
+static unsigned short const mpeg_sampling_frequencies[MPEG_INDEX][MPEG_SAMPFREQ_INDEX] =
+    {
+        {22050, 24000, 16000, 0},
+        {44100, 48000, 32000, 0}
+    };
+
+static short const mpeg_layer_bitrates[MPEG_INDEX][MPEG_BITRATE_INDEX] =
+    {
+        { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, -1},
+        { 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, -1}
+    };
+
+static short const mpeg_frame_length[MPEG_INDEX][MPEG_LAYER_INDEX] =
+    {
+        {0, 576, 1152, 384},
+        {0, 1152, 1152, 384}
+    };
+
+static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len)
+{
+    unsigned int	tmp;
+    unsigned int	idex;
+    unsigned int	id;
+    unsigned int	bitrate;
+    unsigned int	freq;
+    unsigned int	bits;
+
+    pa_assert(len != NULL);
+    pa_assert(sample_len != NULL);
+
+    tmp = uextract(hi, 21, 11);
+    if (tmp == 0x7ff) {			/* valid sync word */
+        tmp = uextract(hi, 19, 2);
+        if (tmp != 1) {			/* valid IDex */
+
+            idex = tmp >> 1;
+            if (idex != 0) { /* MP3 2.5, not supported by A2DP */
+
+                id = tmp & 1;
+                tmp = uextract(hi, 17, 2);
+                if (tmp == 0x1) {	/* layer 3 */
+
+                    bitrate = uextract(hi, 12, 4);
+                    if ((bitrate != 0) &&	/* not free format */
+                        (bitrate != 0xf)) {	/* not reserved */
+
+                        freq = uextract(hi, 10, 2);
+                        if (freq != 3) {	/* valid sampling frequency */
+
+                            tmp = uextract(hi, 9, 1);
+                            bitrate = mpeg_layer_bitrates[id][bitrate] * 1000;
+                            bits =
+                                (unsigned int) ((bitrate  * mpeg_frame_length[id][1]) /
+                                                mpeg_sampling_frequencies[id][freq]);
+
+                            bits /= 8;	/* # of bytes */
+                            if (tmp) { /* padding */
+                                bits += 1;
+                            }
+
+                            /* sanity check */
+                            if (bits > 4 && bits <= 1728) { /* max frame length */
+                                *len = bits;
+                                *sample_len = mpeg_frame_length[id][1];
+                                return TRUE;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        if (hi!=0)
+            pa_log("no sync word found %x", hi);
+    }
+    return FALSE;
+}
+
+static pa_bool_t do_sync_iec958(const uint8_t **p_src, uint32_t *input_bytes)
+{
+    pa_bool_t sync_found = FALSE;
+    uint32_t preambles;
+    const uint8_t *src;
+
+    pa_assert(*p_src);
+    src = *p_src;
+
+    for (;;) {
+
+        if (*input_bytes <= 4)
+            break;
+
+        /* we need 4 bytes to detect the Pa,Pb preambles */
+        preambles = src[0]<<24 | src[1]<<16 | src[2]<<8 | src[3];
+#define IEC958_MAGIC_NUMBER  0x72F81F4E
+        if (preambles == IEC958_MAGIC_NUMBER) { /* little endian assumed */
+            sync_found = TRUE;
+            break;
+        } else {
+            /* try to find a new syncword */
+            src += 1;
+            *input_bytes -= 1;
+        }
+    }
+    *p_src=src;
+
+    return sync_found;
+}
+
+/* Run from IO thread */
+static int a2dp_passthrough_process_render(struct userdata *u) {
+    struct a2dp_info *a2dp;
+    struct rtp_header *header;
+    struct mpeg_rtp_payload *payload;
+    size_t nbytes;
+    uint8_t *d;
+    const uint8_t *p;
+    size_t bytes_remaining = 0;     /* in the sink buffer */
+    pa_bool_t sync_found = FALSE;
+    pa_bool_t confirmed_sync;
+    uint32_t frame_length;
+    uint32_t frag_offset;
+    uint32_t max_bytes;
+    int ret = 0;
+
+    pa_assert(u);
+    pa_assert(u->profile == PROFILE_A2DP_PASSTHROUGH);
+    pa_assert(u->sink);
+
+    /* inits for output buffer */
+    a2dp_prepare_buffer(u);
+
+    /* allocate memory if needed */
+    if (!u->write_memchunk.memblock) {
+        pa_memchunk *c;
+
+        pa_assert(u->leftover_bytes == 0);
+        c = &u->write_memchunk;
+        c->memblock = pa_memblock_new(u->sink->core->mempool, u->read_block_size);
+        c->index = 0;
+        c->length = u->read_block_size;
+    }
+
+    /* if no sync was found, handle the remaining part of the previous buffer */
+    if (u->leftover_bytes) {
+        pa_memchunk *c;
+        pa_memblock *n;
+        void *tdata, *sdata;
+        size_t l;
+
+        c = &u->write_memchunk;
+        n = pa_memblock_new(u->sink->core->mempool, u->read_block_size);
+
+        sdata = pa_memblock_acquire(c->memblock);
+        tdata = pa_memblock_acquire(n);
+
+        l = c->length;
+        memcpy(tdata, (uint8_t*) sdata + c->index, l);
+
+        pa_memblock_release(c->memblock);
+        pa_memblock_release(n);
+
+        pa_memblock_unref(c->memblock);
+
+        c->memblock = n;
+        c->index = l;
+        c->length = u->read_block_size - l;
+    }
+
+    /* fill memchunck, previous leftover bytes have been copied into beginning of frame already */
+    pa_sink_render_into_full(u->sink, &u->write_memchunk);
+
+    bytes_remaining = u->read_block_size;
+
+    /* try to find an IEC958 pattern in the buffer */
+    p = (const uint8_t*) pa_memblock_acquire(u->write_memchunk.memblock);
+    sync_found = do_sync_iec958(&p, &bytes_remaining);
+    pa_memblock_release(u->write_memchunk.memblock);
+
+    /* update pointers */
+    u->write_memchunk.index = u->read_block_size-bytes_remaining;
+    u->write_memchunk.length = bytes_remaining;
+    u->leftover_bytes = bytes_remaining;
+
+    if (sync_found==TRUE && u->leftover_bytes!=u->read_block_size) {
+        /* only a partial frame found, handle in the next call */
+        sync_found = FALSE;
+    }
+
+    confirmed_sync = FALSE;
+    if (sync_found==TRUE) {
+        /* we are aligned on an IEC958 frame boundary */
+        p = (const uint8_t*) pa_memblock_acquire(u->write_memchunk.memblock);
+
+        if (p[4] == 0x05) { /* MPEG payload */
+            uint32_t frame_length2 = 0;
+            uint32_t sample_len = 0;
+
+            /* valid MPEG payload, now extract frame length */
+
+            frame_length = p[7]<<8 | p[6]; /* in bits */
+            frame_length >>= 3;              /* in bytes */
+
+            if (mp3_synclength(p[9]<<24 | p[8]<<16 | p[11]<<8 | p[10], &frame_length2, &sample_len) == TRUE) {
+                if (frame_length == frame_length2) {
+                    /* now we have verified that the IEC frame and MPEG frame are in
+                       agreement, we should be good to go */
+                    confirmed_sync = TRUE;
+                }
+            } else {
+                pa_log("IEC958 sync found but no MP3 sync found");
+            }
+        }
+        pa_memblock_release(u->write_memchunk.memblock);
+    }
+
+    /* no valid sync found, clean-up and return */
+    if (confirmed_sync == FALSE) {
+        int toflush;
+
+        toflush = u->read_block_size - bytes_remaining;
+        if (toflush == 0)
+            toflush = u->read_block_size;
+        u->write_index += (uint64_t)toflush;
+
+        /* clean-up and move on */
+        if (u->leftover_bytes == u->read_block_size) {
+            pa_memblock_unref(u->write_memchunk.memblock);
+            pa_memchunk_reset(&u->write_memchunk);
+            u->leftover_bytes = 0;
+        }
+
+        return 1;
+    }
+
+    /* now push the MP3 data into the A2DP link */
+
+    /* set pointers for RTP header and payload */
+    a2dp = &u->a2dp;
+    header = a2dp->buffer;
+    payload = (struct mpeg_rtp_payload*) ((uint8_t*) a2dp->buffer + sizeof(*header));
+
+    /* set pointer for MP3 frame */
+    p = (const uint8_t*) pa_memblock_acquire(u->write_memchunk.memblock);
+    p += 8;
+
+    max_bytes = u->read_link_mtu - sizeof(*header) - sizeof(*payload);
+    max_bytes >>= 1;
+    max_bytes <<= 1; /* make sure we handle byte pairs */
+
+    /* round to ceiling for frame length, required for byte swaps */
+    frame_length ++;
+    frame_length >>= 1;
+    frame_length <<= 1;
+
+    frag_offset = 0;
+
+    while (frame_length != 0) { /* several iterations if frame_length larger than mtu */
+        uint32_t length;
+        uint32_t i;
+
+        length = frame_length;
+        if (length > max_bytes)
+            length = max_bytes;
+        frame_length -= length;
+
+        d = (uint8_t*) a2dp->buffer + sizeof(*header) + sizeof(*payload);
+
+        /* swap bytes, input is assumed 16-bit little endian */
+        pa_assert(!(length&1));
+
+        for (i=0; i<length/2; i++) {
+            *(d+1) = *p;
+            *d = *(p+1);
+            d += 2;
+            p += 2;
+        }
+
+        nbytes = (uint8_t*) d - (uint8_t*) a2dp->buffer;
+        pa_assert(nbytes != 0);
+
+        /* fill RTP header and payload */
+        memset(a2dp->buffer, 0, sizeof(*header) + sizeof(*payload));
+        header->v = 2;   /* rtp packet v2    */
+        header->pt = 14; /* MPA payload type */
+        header->timestamp =
+            htonl(u->write_index / pa_frame_size(&u->sample_spec)
+                  * 90000
+                  / u->sample_spec.rate); /* 90kHz timestamp */
+        header->m = 1;   /* talk_spurt is always set */
+        header->sequence_number = htons(a2dp->seq_num);
+        header->ssrc = htonl(1);
+
+        payload->mbz = 0;                   /* always zero */
+        payload->frag_offset = frag_offset; /* non-zero only when frame is spread across multiple packets */
+
+        pa_assert(nbytes != 0);
+        pa_assert(nbytes <= u->read_link_mtu);
+
+        ret = 0;
+        for (;;) {
+            ssize_t l;
+
+            l = pa_write(u->stream_fd, a2dp->buffer, nbytes, &u->stream_write_type);
+
+            pa_assert(l != 0);
+
+            if (l < 0) {
+
+                if (errno == EINTR)
+                    /* Retry right away if we got interrupted */
+                    continue;
+
+                else if (errno == EAGAIN)
+                    /* Hmm, apparently the socket was not writable, give up for now */
+                    break;
+
+                pa_log_error("Failed to write data to socket: %s", pa_cstrerror(errno));
+                ret  = -1;
+                break;
+            }
+
+            pa_assert((size_t) l <= nbytes);
+
+            if ((size_t) l != nbytes) {
+                pa_log_warn("Wrote memory block to socket only partially! %llu written, wanted to write %llu.",
+                            (unsigned long long) l,
+                            (unsigned long long) nbytes);
+                ret = -1;
+                break;
+            }
+
+            ret = 1;
+            break;
+        }
+
+        if (ret != 1) {
+            /* stop this loop */
+            frame_length = 0;
+        }
+
+        frag_offset += length;
+    }
+
+    pa_memblock_release(u->write_memchunk.memblock);
+
+    /* clean-up and move on */
+    if (u->leftover_bytes == u->read_block_size) {
+        pa_memblock_unref(u->write_memchunk.memblock);
+        pa_memchunk_reset(&u->write_memchunk);
+        u->leftover_bytes = 0;
+    }
+
+    /* update counters */
+    u->write_index += (uint64_t) u->read_block_size;
+    a2dp->seq_num++;
+
+    return ret;
+}
+
 static int a2dp_process_push(struct userdata *u) {
     int ret = 0;
     pa_memchunk memchunk;
@@ -825,7 +1212,7 @@ static int a2dp_process_push(struct userdata *u) {
         pa_usec_t tstamp;
         struct a2dp_info *a2dp;
         struct rtp_header *header;
-        struct rtp_payload *payload;
+        struct sbc_rtp_payload *payload;
         const void *p;
         void *d;
         ssize_t l;
@@ -835,7 +1222,7 @@ static int a2dp_process_push(struct userdata *u) {
 
         a2dp = &u->a2dp;
         header = a2dp->buffer;
-        payload = (struct rtp_payload*) ((uint8_t*) a2dp->buffer + sizeof(*header));
+        payload = (struct sbc_rtp_payload*) ((uint8_t*) a2dp->buffer + sizeof(*header));
 
         l = pa_read(u->stream_fd, a2dp->buffer, a2dp->buffer_size, &u->stream_write_type);
 
@@ -1054,6 +1441,9 @@ static void thread_func(void *userdata) {
 
                     if (u->profile == PROFILE_A2DP) {
                         if ((n_written = a2dp_process_render(u)) < 0)
+                            goto fail;
+                    } else if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
+                        if ((n_written = a2dp_passthrough_process_render(u)) < 0)
                             goto fail;
                     } else {
                         if ((n_written = hsp_process_render(u)) < 0)
@@ -1532,7 +1922,9 @@ static int add_sink(struct userdata *u) {
 
         pa_sink_set_max_request(u->sink, u->write_block_size);
         pa_sink_set_fixed_latency(u->sink,
-                                  (u->profile == PROFILE_A2DP ? FIXED_LATENCY_PLAYBACK_A2DP : FIXED_LATENCY_PLAYBACK_HSP) +
+                                  (((u->profile == PROFILE_A2DP)||
+                                    (u->profile == PROFILE_A2DP_PASSTHROUGH)) ?
+                                   FIXED_LATENCY_PLAYBACK_A2DP : FIXED_LATENCY_PLAYBACK_HSP) +
                                   pa_bytes_to_usec(u->write_block_size, &u->sample_spec));
     }
 
@@ -1728,12 +2120,12 @@ static int bt_transport_config_a2dp(struct userdata *u) {
     a2dp->frame_length = sbc_get_frame_length(&a2dp->sbc);
 
     u->read_block_size =
-        (u->read_link_mtu - sizeof(struct rtp_header) - sizeof(struct rtp_payload))
-        / a2dp->frame_length * a2dp->codesize;
+        ((u->read_link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
+        / a2dp->frame_length * a2dp->codesize);
 
     u->write_block_size =
-        (u->write_link_mtu - sizeof(struct rtp_header) - sizeof(struct rtp_payload))
-        / a2dp->frame_length * a2dp->codesize;
+        ((u->write_link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
+        / a2dp->frame_length * a2dp->codesize);
 
     pa_log_info("SBC parameters:\n\tallocation=%u\n\tsubbands=%u\n\tblocks=%u\n\tbitpool=%u\n",
                 a2dp->sbc.allocation, a2dp->sbc.subbands, a2dp->sbc.blocks, a2dp->sbc.bitpool);
@@ -1798,6 +2190,7 @@ static int init_profile(struct userdata *u) {
         return -1;
 
     if (u->profile == PROFILE_A2DP ||
+        u->profile == PROFILE_A2DP_PASSTHROUGH ||
         u->profile == PROFILE_HSP ||
         u->profile == PROFILE_HFGW)
         if (add_sink(u) < 0)
@@ -1986,10 +2379,8 @@ static int card_set_profile(pa_card *c, pa_card_profile *new_profile) {
     } else if (device->audio_sink_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_A2DP) {
         pa_log_warn("A2DP Sink is not connected, refused to switch profile");
         return -PA_ERR_IO;
-    } else if (device->audio_source_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_A2DP_SOURCE) {
-        pa_log_warn("A2DP Source is not connected, refused to switch profile");
-        return -PA_ERR_IO;
-    } else if (device->hfgw_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_HFGW) {
+    }
+    else if (device->hfgw_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_HFGW) {
         pa_log_warn("HandsfreeGateway is not connected, refused to switch profile");
         return -PA_ERR_IO;
     }
@@ -2166,6 +2557,20 @@ static int add_card(struct userdata *u, const pa_bluetooth_device *device) {
         create_ports_for_profile(u, &data, p);
 
         pa_hashmap_put(data.profiles, p->name, p);
+
+        /* add passthrough profile */
+        p = pa_card_profile_new("passthrough", _("MP3 passthrough (A2DP)"), sizeof(enum profile));
+        p->priority = 5;
+        p->n_sinks = 1;
+        p->n_sources = 0;
+        p->max_sink_channels = 2;
+        p->max_source_channels = 0;
+
+        d = PA_CARD_PROFILE_DATA(p);
+        *d = PROFILE_A2DP_PASSTHROUGH;
+
+        pa_hashmap_put(data.profiles, p->name, p);
+
     }
 
     if (pa_bluetooth_uuid_has(device->uuids, A2DP_SOURCE_UUID)) {
