@@ -38,12 +38,17 @@ struct rtp_header {
 	uint32_t csrc[0];
 } __attribute__ ((packed));
 
-struct rtp_payload {
+struct sbc_rtp_payload {
 	unsigned frame_count:4;
 	unsigned rfa0:1;
 	unsigned is_last_fragment:1;
 	unsigned is_first_fragment:1;
 	unsigned is_fragmented:1;
+} __attribute__ ((packed));
+
+struct mpeg_rtp_payload {
+	unsigned mbz:16;
+	unsigned frag_offset:16;
 } __attribute__ ((packed));
 
 #elif __BYTE_ORDER == __BIG_ENDIAN
@@ -63,12 +68,17 @@ struct rtp_header {
 	uint32_t csrc[0];
 } __attribute__ ((packed));
 
-struct rtp_payload {
+struct sbc_rtp_payload {
 	unsigned is_fragmented:1;
 	unsigned is_first_fragment:1;
 	unsigned is_last_fragment:1;
 	unsigned rfa0:1;
 	unsigned frame_count:4;
+} __attribute__ ((packed));
+
+struct mpeg_rtp_payload {
+	unsigned frag_offset:16;
+    unsigned mbz:16;
 } __attribute__ ((packed));
 
 #else
