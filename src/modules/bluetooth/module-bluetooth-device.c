@@ -102,10 +102,17 @@ static const char* const valid_modargs[] = {
     NULL
 };
 
+typedef enum {
+    A2DP_MODE_SBC,
+    A2DP_MODE_MPEG,
+} a2dp_mode_t;
+
 struct a2dp_info {
     sbc_capabilities_t sbc_capabilities;
     mpeg_capabilities_t mpeg_capabilities;
-    pa_bool_t           has_mpeg;
+
+    a2dp_mode_t mode;
+    pa_bool_t has_mpeg;
 
     sbc_t sbc;                           /* Codec data */
     pa_bool_t sbc_initialized;           /* Keep track if the encoder is initialized */
@@ -188,7 +195,7 @@ struct userdata {
 
     pa_bool_t filter_added;
 
-    /* required for PASSTHROUGH profile */
+    /* required for MPEG transport */
     size_t leftover_bytes;
 };
 
@@ -321,7 +328,6 @@ static int parse_mpeg_caps(struct userdata *u, uint8_t seid, const struct bt_get
 
     pa_assert(u);
     pa_assert(rsp);
-    pa_assert( u->profile == PROFILE_A2DP_PASSTHROUGH );
 
     u->a2dp.has_mpeg = FALSE;
 
@@ -428,6 +434,7 @@ static int parse_caps(struct userdata *u, uint8_t seid, const struct bt_get_capa
             return codec->seid;
 
         memcpy(&u->a2dp.sbc_capabilities, codec, sizeof(u->a2dp.sbc_capabilities));
+        pa_log_info("SBC caps detected");
 
     } else if (u->profile == PROFILE_A2DP_SOURCE) {
 
@@ -472,8 +479,7 @@ static int get_caps_msg(struct userdata *u, uint8_t seid, bt_getcaps_msg_t *msg)
     msg->getcaps_req.seid = seid;
 
     pa_strlcpy(msg->getcaps_req.object, u->path, sizeof(msg->getcaps_req.object));
-    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_PASSTHROUGH ||
-        u->profile == PROFILE_A2DP_SOURCE)
+    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE)
         msg->getcaps_req.transport = BT_CAPABILITIES_TRANSPORT_A2DP;
     else {
         pa_assert(u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW);
@@ -514,27 +520,28 @@ static int get_caps(struct userdata *u, uint8_t seid) {
             return -1;
     }
 
-    if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-        seid = 0;
+    seid = 0;
 
+    if (u->profile == PROFILE_A2DP) {
         /* try to find mpeg end-point */
         if (get_caps_msg(u, seid, &msg) < 0)
-            return -1;
+            return 0;
 
         ret = parse_mpeg_caps(u, seid, &msg.getcaps_rsp);
         if (ret < 0)
-            return -1;
+            return 0;
 
         if (ret > 0) {
             /* refine seid caps */
             if (get_caps_msg(u, ret, &msg) < 0)
-                return -1;
+                return 0;
 
             ret = parse_mpeg_caps(u, ret, &msg.getcaps_rsp);
             if (ret < 0)
-                return -1;
+                return 0;
         }
     }
+
     return 0;
 }
 
@@ -600,54 +607,10 @@ static int setup_a2dp(struct userdata *u) {
     };
 
     pa_assert(u);
-    pa_assert(u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_PASSTHROUGH || u->profile == PROFILE_A2DP_SOURCE);
+    pa_assert(u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE);
 
-    if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-        mpeg_capabilities_t *mcap;
+    mpeg_capabilities_t *mcap;
 
-        if (u->a2dp.has_mpeg) {
-            int rate;
-
-            mcap = &u->a2dp.mpeg_capabilities;
-            rate = u->sample_spec.rate;
-
-            if (u->sample_spec.channels == 1)
-                mcap->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
-            else
-                mcap->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
-
-            mcap->crc = 0; /* CRC is broken in some encoders */
-            mcap->layer = BT_MPEG_LAYER_3;
-
-            if (rate == 44100)
-                mcap->frequency = BT_MPEG_SAMPLING_FREQ_44100;
-            else if (rate == 48000)
-                mcap->frequency = BT_MPEG_SAMPLING_FREQ_48000;
-            else if (rate == 32000)
-                mcap->frequency = BT_MPEG_SAMPLING_FREQ_32000;
-            else if (rate == 24000)
-                mcap->frequency = BT_MPEG_SAMPLING_FREQ_24000;
-            else if (rate == 22050)
-                mcap->frequency = BT_MPEG_SAMPLING_FREQ_22050;
-            else if (rate == 16000)
-                mcap->frequency = BT_MPEG_SAMPLING_FREQ_16000;
-            else {
-                pa_log("unsupported sampling frequency");
-                return -1;
-            }
-
-            mcap->mpf = 0; /* don't use optional IETF payload, send raw frames */
-            mcap->bitrate = 0x8000; /* set for vbr, this covers all cases */
-
-            return 0;
-        }
-        else {
-            pa_log("setup_a2dp: Trying to set-up A2DP Passthrough configuration but no MPEG endpoint available");
-            return -1; /* return error, profile will not be loaded */
-        }
-    }
-
-    /* other profiles */
     cap = &u->a2dp.sbc_capabilities;
 
     /* Find the lowest freq that is at least as high as the requested
@@ -734,6 +697,42 @@ static int setup_a2dp(struct userdata *u) {
 
     cap->min_bitpool = (uint8_t) PA_MAX(MIN_BITPOOL, cap->min_bitpool);
     cap->max_bitpool = (uint8_t) PA_MIN(a2dp_default_bitpool(cap->frequency, cap->channel_mode), cap->max_bitpool);
+
+    /* Now convigure the MPEG caps if we have them */
+    if (u->a2dp.has_mpeg) {
+        int rate;
+
+        mcap = &u->a2dp.mpeg_capabilities;
+        rate = u->sample_spec.rate;
+
+        if (u->sample_spec.channels == 1)
+            mcap->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+        else
+            mcap->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+
+        mcap->crc = 0; /* CRC is broken in some encoders */
+        mcap->layer = BT_MPEG_LAYER_3;
+
+        if (rate == 44100)
+            mcap->frequency = BT_MPEG_SAMPLING_FREQ_44100;
+        else if (rate == 48000)
+            mcap->frequency = BT_MPEG_SAMPLING_FREQ_48000;
+        else if (rate == 32000)
+            mcap->frequency = BT_MPEG_SAMPLING_FREQ_32000;
+        else if (rate == 24000)
+            mcap->frequency = BT_MPEG_SAMPLING_FREQ_24000;
+        else if (rate == 22050)
+            mcap->frequency = BT_MPEG_SAMPLING_FREQ_22050;
+        else if (rate == 16000)
+            mcap->frequency = BT_MPEG_SAMPLING_FREQ_16000;
+        else {
+            pa_log("unsupported MPEG sampling frequency");
+            return -1;
+        }
+
+        mcap->mpf = 0; /* don't use optional IETF payload, send raw frames */
+        mcap->bitrate = 0x8000; /* set for vbr, this covers all cases */
+    }
 
     return 0;
 }
@@ -853,15 +852,16 @@ static int set_conf(struct userdata *u) {
     pa_strlcpy(msg.open_req.object, u->path, sizeof(msg.open_req.object));
 
     if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE) {
-        msg.open_req.seid = u->a2dp.sbc_capabilities.capability.seid;
-    } else if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-        pa_assert(u->a2dp.has_mpeg);
-        msg.open_req.seid = u->a2dp.mpeg_capabilities.capability.seid;
-    } else {
+        if (u->a2dp.mode == A2DP_MODE_SBC)
+            msg.open_req.seid = u->a2dp.sbc_capabilities.capability.seid;
+        else if (u->a2dp.mode == A2DP_MODE_MPEG) {
+            pa_assert(u->a2dp.has_mpeg);
+            msg.open_req.seid = u->a2dp.mpeg_capabilities.capability.seid;
+        }
+    } else
         msg.open_req.seid = BT_A2DP_SEID_RANGE + 1;
-    }
 
-    msg.open_req.lock = (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_PASSTHROUGH) ? BT_WRITE_LOCK : BT_READ_LOCK | BT_WRITE_LOCK;
+    msg.open_req.lock = u->profile == PROFILE_A2DP ? BT_WRITE_LOCK : BT_READ_LOCK | BT_WRITE_LOCK;
 
     if (service_send(u, &msg.open_req.h) < 0)
         return -1;
@@ -869,7 +869,7 @@ static int set_conf(struct userdata *u) {
     if (service_expect(u, &msg.open_rsp.h, sizeof(msg), BT_OPEN, sizeof(msg.open_rsp)) < 0)
         return -1;
 
-    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_PASSTHROUGH || u->profile == PROFILE_A2DP_SOURCE ) {
+    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE ) {
 
         /* for passthrough we expect little-endian data to be compatible with the ALSA iec958
            devices */
@@ -891,10 +891,10 @@ static int set_conf(struct userdata *u) {
     msg.setconf_req.h.length = sizeof(msg.setconf_req);
 
     if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE) {
-        memcpy(&msg.setconf_req.codec, &u->a2dp.sbc_capabilities, sizeof(u->a2dp.sbc_capabilities));
-    } else if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-        pa_assert(u->a2dp.has_mpeg);
-        memcpy(&msg.setconf_req.codec, &u->a2dp.mpeg_capabilities, sizeof(u->a2dp.mpeg_capabilities));
+        if (u->a2dp.mode == A2DP_MODE_SBC)
+            memcpy(&msg.setconf_req.codec, &u->a2dp.sbc_capabilities, sizeof(u->a2dp.sbc_capabilities));
+        else if (u->a2dp.mode == A2DP_MODE_MPEG)
+            memcpy(&msg.setconf_req.codec, &u->a2dp.mpeg_capabilities, sizeof(u->a2dp.mpeg_capabilities));
     } else {
         msg.setconf_req.codec.transport = BT_CAPABILITIES_TRANSPORT_SCO;
         msg.setconf_req.codec.seid = BT_A2DP_SEID_RANGE + 1;
@@ -912,21 +912,21 @@ static int set_conf(struct userdata *u) {
 
     /* setup SBC encoder now we agree on parameters */
     if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE) {
-        setup_sbc(&u->a2dp, u->profile);
+        if (u->a2dp.mode == A2DP_MODE_SBC) {
+            setup_sbc(&u->a2dp, u->profile);
 
-        u->block_size =
-            ((u->link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
-             / u->a2dp.frame_length
-             * u->a2dp.codesize);
+            u->block_size =
+                ((u->link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
+                 / u->a2dp.frame_length
+                 * u->a2dp.codesize);
 
-        pa_log_info("SBC parameters:\n\tallocation=%u\n\tsubbands=%u\n\tblocks=%u\n\tbitpool=%u\n",
+            pa_log_info("SBC parameters:\n\tallocation=%u\n\tsubbands=%u\n\tblocks=%u\n\tbitpool=%u\n",
                     u->a2dp.sbc.allocation, u->a2dp.sbc.subbands, u->a2dp.sbc.blocks, u->a2dp.sbc.bitpool);
-    } else if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-
-        /* available payload per packet */
-        u->block_size = 1152*4; /* this is the size of an IEC61937 frame for MPEG layer 3 */
-        u->leftover_bytes=0;
-
+        } else if (u->a2dp.mode == A2DP_MODE_MPEG) {
+            /* available payload per packet */
+            u->block_size = 1152*4; /* this is the size of an IEC61937 frame for MPEG layer 3 */
+            u->leftover_bytes = 0;
+        }
     } else
         u->block_size = u->link_mtu;
 
@@ -1083,6 +1083,26 @@ static int stop_stream_fd(struct userdata *u) {
     return r;
 }
 
+static int close_stream(struct userdata *u) {
+    union {
+        struct bt_close_req close_req;
+        struct bt_close_rsp close_rsp;
+        bt_audio_error_t error;
+        uint8_t buf[BT_SUGGESTED_BUFFER_SIZE];
+    } msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.close_req.h.type = BT_REQUEST;
+    msg.close_req.h.name = BT_CLOSE;
+    msg.close_req.h.length = sizeof(msg.close_req);
+
+    if (service_send(u, &msg.close_req.h) < 0)
+        return -1;
+
+    if (service_expect(u, &msg.close_rsp.h, sizeof(msg), BT_CLOSE, sizeof(msg.close_rsp)) < 0)
+        return -1;
+}
+
 static void bt_transport_release(struct userdata *u) {
     const char *accesstype = "rw";
     const pa_bluetooth_transport *t;
@@ -1161,6 +1181,56 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
     pa_assert(u->sink == PA_SINK(o));
 
     switch (code) {
+
+        case PA_SINK_MESSAGE_ADD_INPUT: {
+            /* If you change anything here, make sure to change the
+             * sink input handling a few lines down at
+             * PA_SINK_MESSAGE_FINISH_MOVE, too. */
+
+            /* FIXME: returning failure here causes the server to just die.
+             * Would be better to be able to abort the stream gracefully. */
+
+            pa_sink_input *i = PA_SINK_INPUT(data);
+            a2dp_mode_t mode;
+
+            if (u->profile == PROFILE_A2DP) {
+                switch(i->format->encoding) {
+                    case PA_ENCODING_PCM:
+                        mode = A2DP_MODE_SBC;
+                        break;
+
+                    case PA_ENCODING_MPEG_IEC61937:
+                        pa_assert(u->a2dp.has_mpeg);
+                        mode = A2DP_MODE_MPEG;
+                        break;
+
+                    default:
+                        pa_assert_not_reached();
+                }
+
+                if (PA_UNLIKELY(mode != u->a2dp.mode)) {
+                    /* FIXME: Just suspend should suffice? This resets the smoother */
+                    if (stop_stream_fd(u) < 0 || close_stream(u) < 0) {
+                        failed = TRUE;
+                        break;
+                    }
+
+                    u->a2dp.mode = mode;
+                    if (set_conf(u) < 0) {
+                        failed = TRUE;
+                        break;
+                    }
+
+                    if (start_stream_fd(u) < 0) {
+                        failed = TRUE;
+                        break;
+                    }
+                }
+            }
+
+            break;
+        }
+
 
         case PA_SINK_MESSAGE_SET_STATE:
 
@@ -1766,7 +1836,6 @@ static int a2dp_passthrough_process_render(struct userdata *u) {
     int ret = 0;
 
     pa_assert(u);
-    pa_assert(u->profile == PROFILE_A2DP_PASSTHROUGH);
     pa_assert(u->sink);
 
     /* inits for output buffer */
@@ -2243,11 +2312,14 @@ static void thread_func(void *userdata) {
                         u->started_at = pa_rtclock_now();
 
                     if (u->profile == PROFILE_A2DP) {
-                        if ((n_written = a2dp_process_render(u)) < 0)
-                            goto fail;
-                    } else if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-                        if ((n_written = a2dp_passthrough_process_render(u)) < 0)
-                            goto fail;
+                        if (u->a2dp.mode == A2DP_MODE_SBC) {
+                            if ((n_written = a2dp_process_render(u)) < 0)
+                                goto fail;
+                        } else if (u->a2dp.mode == A2DP_MODE_MPEG) {
+                            if ((n_written = a2dp_passthrough_process_render(u)) < 0)
+                                goto fail;
+                        } else
+                            pa_assert_not_reached();
                     } else {
                         if ((n_written = hsp_process_render(u)) < 0)
                             goto fail;
@@ -2624,6 +2696,31 @@ static pa_hook_result_t source_state_changed_cb(pa_core *c, pa_source *s, struct
     return PA_HOOK_OK;
 }
 
+static pa_idxset* sink_get_formats(pa_sink *s) {
+    struct userdata *u;
+    pa_idxset *formats;
+    pa_format_info *f;
+
+    pa_assert(s);
+
+    formats = pa_idxset_new(NULL, NULL);
+
+    f = pa_format_info_new();
+    f->encoding = PA_ENCODING_PCM;
+    pa_idxset_put(formats, f, NULL);
+
+    u = (struct userdata *) s->userdata;
+
+    if (u->profile == PROFILE_A2DP && u->a2dp.has_mpeg) {
+        f = pa_format_info_new();
+        f->encoding = PA_ENCODING_MPEG_IEC61937;
+        /* FIXME: Populate supported rates, layers, ... */
+        pa_idxset_put(formats, f, NULL);
+    }
+
+    return formats;
+}
+
 /* Run from main thread */
 static int add_sink(struct userdata *u) {
     char *k;
@@ -2648,7 +2745,7 @@ static int add_sink(struct userdata *u) {
         data.driver = __FILE__;
         data.module = u->module;
         pa_sink_new_data_set_sample_spec(&data, &u->sample_spec);
-        pa_proplist_sets(data.proplist, "bluetooth.protocol", (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_PASSTHROUGH) ? "a2dp" : "sco");
+        pa_proplist_sets(data.proplist, "bluetooth.protocol", (u->profile == PROFILE_A2DP) ? "a2dp" : "sco");
         if (u->profile == PROFILE_HSP)
             pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "phone");
         data.card = u->card;
@@ -2671,13 +2768,13 @@ static int add_sink(struct userdata *u) {
 
         u->sink->userdata = u;
         u->sink->parent.process_msg = sink_process_msg;
+        u->sink->get_formats = sink_get_formats;
 
         pa_sink_set_max_request(u->sink, u->block_size);
         pa_sink_set_fixed_latency(u->sink,
-                                  (((u->profile == PROFILE_A2DP)||
-                                    (u->profile == PROFILE_A2DP_PASSTHROUGH)) ?
-                                   FIXED_LATENCY_PLAYBACK_A2DP : FIXED_LATENCY_PLAYBACK_HSP) +
-                                  pa_bytes_to_usec(u->block_size, &u->sample_spec));
+                                  ((u->profile == PROFILE_A2DP) ?
+                                   FIXED_LATENCY_PLAYBACK_A2DP :
+                                   FIXED_LATENCY_PLAYBACK_HSP) + pa_bytes_to_usec(u->block_size, &u->sample_spec));
     }
 
     if (u->profile == PROFILE_HSP) {
@@ -2688,9 +2785,6 @@ static int add_sink(struct userdata *u) {
         pa_shared_set(u->core, k, u);
         pa_xfree(k);
     }
-
-    if (u->profile == PROFILE_A2DP_PASSTHROUGH)
-        u->sink->flags |= PA_SINK_PASSTHROUGH;
 
     return 0;
 }
@@ -2979,6 +3073,11 @@ static int setup_bt(struct userdata *u) {
 
     pa_log_debug("Got device capabilities");
 
+    if (u->profile == PROFILE_A2DP) {
+        /* Connect for SBC to start with, switch later if required */
+        u->a2dp.mode = A2DP_MODE_SBC;
+    }
+
     if (set_conf(u) < 0)
         return -1;
 
@@ -3004,7 +3103,6 @@ static int init_profile(struct userdata *u) {
         return -1;
 
     if (u->profile == PROFILE_A2DP ||
-        u->profile == PROFILE_A2DP_PASSTHROUGH ||
         u->profile == PROFILE_HSP ||
         u->profile == PROFILE_HFGW)
         if (add_sink(u) < 0)
@@ -3314,19 +3412,6 @@ static int add_card(struct userdata *u, const pa_bluetooth_device *device) {
 
         pa_hashmap_put(data.profiles, p->name, p);
 
-        /* add passthrough profile */
-        p = pa_card_profile_new("passthrough", _("MP3 passthrough (A2DP)"), sizeof(enum profile));
-        p->priority = 5;
-        p->n_sinks = 1;
-        p->n_sources = 0;
-        p->max_sink_channels = 2;
-        p->max_source_channels = 0;
-
-        d = PA_CARD_PROFILE_DATA(p);
-        *d = PROFILE_A2DP_PASSTHROUGH;
-
-        pa_hashmap_put(data.profiles, p->name, p);
-
     }
 
     if (pa_bluetooth_uuid_has(device->uuids, A2DP_SOURCE_UUID)) {
@@ -3401,7 +3486,6 @@ static int add_card(struct userdata *u, const pa_bluetooth_device *device) {
 
     if ((device->headset_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_HSP) ||
         (device->audio_sink_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_A2DP) ||
-        (device->audio_sink_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_A2DP_PASSTHROUGH) ||
         (device->hfgw_state < PA_BT_AUDIO_STATE_CONNECTED && *d == PROFILE_HFGW)) {
         pa_log_warn("Default profile not connected, selecting off profile");
         u->card->active_profile = pa_hashmap_get(u->card->profiles, "off");
