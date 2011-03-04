@@ -58,7 +58,6 @@ struct pa_bluetooth_uuid {
 enum profile {
     PROFILE_A2DP,
     PROFILE_A2DP_SOURCE,
-    PROFILE_A2DP_PASSTHROUGH,
     PROFILE_HSP,
     PROFILE_HFGW,
     PROFILE_OFF
