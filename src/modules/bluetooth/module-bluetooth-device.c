@@ -103,10 +103,17 @@ static const char* const valid_modargs[] = {
     NULL
 };
 
+typedef enum {
+    A2DP_MODE_SBC,
+    A2DP_MODE_MPEG,
+} a2dp_mode_t;
+
 struct a2dp_info {
     sbc_capabilities_t sbc_capabilities;
     mpeg_capabilities_t mpeg_capabilities;
-    pa_bool_t           has_mpeg;
+
+    a2dp_mode_t mode;
+    pa_bool_t has_mpeg;
 
     sbc_t sbc;                           /* Codec data */
     pa_bool_t sbc_initialized;           /* Keep track if the encoder is initialized */
@@ -191,7 +198,7 @@ struct userdata {
 
     pa_bool_t filter_added;
 
-    /* required for PASSTHROUGH profile */
+    /* required for MPEG transport */
     size_t leftover_bytes;
 };
 
@@ -365,6 +372,41 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
     pa_assert(u->transport);
 
     switch (code) {
+
+        case PA_SINK_MESSAGE_ADD_INPUT: {
+            /* If you change anything here, make sure to change the
+             * sink input handling a few lines down at
+             * PA_SINK_MESSAGE_FINISH_MOVE, too. */
+
+            /* FIXME: returning failure here causes the server to just die.
+             * Would be better to be able to abort the stream gracefully. */
+
+            pa_sink_input *i = PA_SINK_INPUT(data);
+            a2dp_mode_t mode;
+
+            if (u->profile == PROFILE_A2DP) {
+                switch(i->format->encoding) {
+                    case PA_ENCODING_PCM:
+                        mode = A2DP_MODE_SBC;
+                        break;
+
+                    case PA_ENCODING_MPEG_IEC61937:
+                        pa_assert(u->a2dp.has_mpeg);
+                        mode = A2DP_MODE_MPEG;
+                        break;
+
+                    default:
+                        pa_assert_not_reached();
+                }
+
+                if (PA_UNLIKELY(mode != u->a2dp.mode)) {
+                    /* FIXME: Just suspend should suffice? This resets the smoother */
+                }
+            }
+
+            break;
+        }
+
 
         case PA_SINK_MESSAGE_SET_STATE:
 
@@ -961,7 +1003,6 @@ static int a2dp_passthrough_process_render(struct userdata *u) {
     int ret = 0;
 
     pa_assert(u);
-    pa_assert(u->profile == PROFILE_A2DP_PASSTHROUGH);
     pa_assert(u->sink);
 
     /* inits for output buffer */
@@ -1440,11 +1481,14 @@ static void thread_func(void *userdata) {
                         u->started_at = pa_rtclock_now();
 
                     if (u->profile == PROFILE_A2DP) {
-                        if ((n_written = a2dp_process_render(u)) < 0)
-                            goto fail;
-                    } else if (u->profile == PROFILE_A2DP_PASSTHROUGH) {
-                        if ((n_written = a2dp_passthrough_process_render(u)) < 0)
-                            goto fail;
+                        if (u->a2dp.mode == A2DP_MODE_SBC) {
+                            if ((n_written = a2dp_process_render(u)) < 0)
+                                goto fail;
+                        } else if (u->a2dp.mode == A2DP_MODE_MPEG) {
+                            if ((n_written = a2dp_passthrough_process_render(u)) < 0)
+                                goto fail;
+                        } else
+                            pa_assert_not_reached();
                     } else {
                         if ((n_written = hsp_process_render(u)) < 0)
                             goto fail;
@@ -1856,6 +1900,7 @@ static void connect_ports(struct userdata *u, void *sink_or_source_new_data, pa_
     }
 }
 
+
 static const char *profile_to_string(enum profile profile) {
     switch(profile) {
         case PROFILE_A2DP:
@@ -1869,6 +1914,31 @@ static const char *profile_to_string(enum profile profile) {
         default:
             pa_assert_not_reached();
     }
+}
+
+static pa_idxset* sink_get_formats(pa_sink *s) {
+    struct userdata *u;
+    pa_idxset *formats;
+    pa_format_info *f;
+
+    pa_assert(s);
+
+    formats = pa_idxset_new(NULL, NULL);
+
+    f = pa_format_info_new();
+    f->encoding = PA_ENCODING_PCM;
+    pa_idxset_put(formats, f, NULL);
+
+    u = (struct userdata *) s->userdata;
+
+    if (u->profile == PROFILE_A2DP && u->a2dp.has_mpeg) {
+        f = pa_format_info_new();
+        f->encoding = PA_ENCODING_MPEG_IEC61937;
+        /* FIXME: Populate supported rates, layers, ... */
+        pa_idxset_put(formats, f, NULL);
+    }
+
+    return formats;
 }
 
 /* Run from main thread */
@@ -1919,12 +1989,11 @@ static int add_sink(struct userdata *u) {
 
         u->sink->userdata = u;
         u->sink->parent.process_msg = sink_process_msg;
+        u->sink->get_formats = sink_get_formats;
 
         pa_sink_set_max_request(u->sink, u->write_block_size);
-        pa_sink_set_fixed_latency(u->sink,
-                                  (((u->profile == PROFILE_A2DP)||
-                                    (u->profile == PROFILE_A2DP_PASSTHROUGH)) ?
-                                   FIXED_LATENCY_PLAYBACK_A2DP : FIXED_LATENCY_PLAYBACK_HSP) +
+        pa_sink_set_fixed_latency(u->sink, (u->profile == PROFILE_A2DP) ?
+                                   FIXED_LATENCY_PLAYBACK_A2DP : FIXED_LATENCY_PLAYBACK_HSP +
                                   pa_bytes_to_usec(u->write_block_size, &u->sample_spec));
     }
 
@@ -2174,6 +2243,11 @@ static int setup_bt(struct userdata *u) {
 
     u->transport = pa_xstrdup(t->path);
 
+    if (u->profile == PROFILE_A2DP) {
+        /* Connect for SBC to start with, switch later if required */
+        u->a2dp.mode = A2DP_MODE_SBC;
+    }
+
     if (bt_transport_acquire(u, FALSE) < 0)
         return -1;
 
@@ -2190,7 +2264,6 @@ static int init_profile(struct userdata *u) {
         return -1;
 
     if (u->profile == PROFILE_A2DP ||
-        u->profile == PROFILE_A2DP_PASSTHROUGH ||
         u->profile == PROFILE_HSP ||
         u->profile == PROFILE_HFGW)
         if (add_sink(u) < 0)
@@ -2555,19 +2628,6 @@ static int add_card(struct userdata *u, const pa_bluetooth_device *device) {
         d = PA_CARD_PROFILE_DATA(p);
         *d = PROFILE_A2DP;
         create_ports_for_profile(u, &data, p);
-
-        pa_hashmap_put(data.profiles, p->name, p);
-
-        /* add passthrough profile */
-        p = pa_card_profile_new("passthrough", _("MP3 passthrough (A2DP)"), sizeof(enum profile));
-        p->priority = 5;
-        p->n_sinks = 1;
-        p->n_sources = 0;
-        p->max_sink_channels = 2;
-        p->max_source_channels = 0;
-
-        d = PA_CARD_PROFILE_DATA(p);
-        *d = PROFILE_A2DP_PASSTHROUGH;
 
         pa_hashmap_put(data.profiles, p->name, p);
 
