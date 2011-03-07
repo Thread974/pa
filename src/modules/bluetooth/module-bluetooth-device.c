@@ -546,6 +546,28 @@ static int get_caps(struct userdata *u, uint8_t seid) {
     return 0;
 }
 
+static int close_stream(struct userdata *u) {
+    union {
+        struct bt_close_req close_req;
+        struct bt_close_rsp close_rsp;
+        bt_audio_error_t error;
+        uint8_t buf[BT_SUGGESTED_BUFFER_SIZE];
+    } msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.close_req.h.type = BT_REQUEST;
+    msg.close_req.h.name = BT_CLOSE;
+    msg.close_req.h.length = sizeof(msg.close_req);
+
+    if (service_send(u, &msg.close_req.h) < 0)
+        return -1;
+
+    if (service_expect(u, &msg.close_rsp.h, sizeof(msg), BT_CLOSE, sizeof(msg.close_rsp)) < 0)
+        return -1;
+
+    return 0;
+}
+
 /* Run from main thread */
 static uint8_t a2dp_default_bitpool(uint8_t freq, uint8_t mode) {
 
@@ -903,11 +925,15 @@ static int set_conf(struct userdata *u) {
     }
     msg.setconf_req.h.length += msg.setconf_req.codec.length - sizeof(msg.setconf_req.codec);
 
-    if (service_send(u, &msg.setconf_req.h) < 0)
+    if (service_send(u, &msg.setconf_req.h) < 0) {
+        close_stream(u);
         return -1;
+    }
 
-    if (service_expect(u, &msg.setconf_rsp.h, sizeof(msg), BT_SET_CONFIGURATION, sizeof(msg.setconf_rsp)) < 0)
+    if (service_expect(u, &msg.setconf_rsp.h, sizeof(msg), BT_SET_CONFIGURATION, sizeof(msg.setconf_rsp)) < 0) {
+        close_stream(u);
         return -1;
+    }
 
     u->link_mtu = msg.setconf_rsp.link_mtu;
 
@@ -1082,26 +1108,6 @@ static int stop_stream_fd(struct userdata *u) {
     }
 
     return r;
-}
-
-static int close_stream(struct userdata *u) {
-    union {
-        struct bt_close_req close_req;
-        struct bt_close_rsp close_rsp;
-        bt_audio_error_t error;
-        uint8_t buf[BT_SUGGESTED_BUFFER_SIZE];
-    } msg;
-
-    memset(&msg, 0, sizeof(msg));
-    msg.close_req.h.type = BT_REQUEST;
-    msg.close_req.h.name = BT_CLOSE;
-    msg.close_req.h.length = sizeof(msg.close_req);
-
-    if (service_send(u, &msg.close_req.h) < 0)
-        return -1;
-
-    if (service_expect(u, &msg.close_rsp.h, sizeof(msg), BT_CLOSE, sizeof(msg.close_rsp)) < 0)
-        return -1;
 }
 
 static void bt_transport_release(struct userdata *u) {
