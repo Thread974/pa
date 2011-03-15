@@ -617,113 +617,116 @@ static uint8_t a2dp_default_bitpool(uint8_t freq, uint8_t mode) {
 /* Run from main thread */
 static int setup_a2dp(struct userdata *u) {
     sbc_capabilities_t *cap;
+    mpeg_capabilities_t *mcap;
     int i;
-
-    static const struct {
-        uint32_t rate;
-        uint8_t cap;
-    } freq_table[] = {
-        { 16000U, BT_SBC_SAMPLING_FREQ_16000 },
-        { 32000U, BT_SBC_SAMPLING_FREQ_32000 },
-        { 44100U, BT_SBC_SAMPLING_FREQ_44100 },
-        { 48000U, BT_SBC_SAMPLING_FREQ_48000 }
-    };
 
     pa_assert(u);
     pa_assert(u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE);
 
-    mpeg_capabilities_t *mcap;
+    if (u->a2dp.mode == A2DP_MODE_SBC) {
 
-    cap = &u->a2dp.sbc_capabilities;
+        static const struct {
+            uint32_t rate;
+            uint8_t cap;
+        } freq_table[] = {
+            { 16000U, BT_SBC_SAMPLING_FREQ_16000 },
+            { 32000U, BT_SBC_SAMPLING_FREQ_32000 },
+            { 44100U, BT_SBC_SAMPLING_FREQ_44100 },
+            { 48000U, BT_SBC_SAMPLING_FREQ_48000 }
+        };
 
-    /* Find the lowest freq that is at least as high as the requested
-     * sampling rate */
-    for (i = 0; (unsigned) i < PA_ELEMENTSOF(freq_table); i++)
-        if (freq_table[i].rate >= u->sample_spec.rate && (cap->frequency & freq_table[i].cap)) {
-            u->sample_spec.rate = freq_table[i].rate;
-            cap->frequency = freq_table[i].cap;
-            break;
-        }
+        cap = &u->a2dp.sbc_capabilities;
 
-    if ((unsigned) i == PA_ELEMENTSOF(freq_table)) {
-        for (--i; i >= 0; i--) {
-            if (cap->frequency & freq_table[i].cap) {
+        /* Find the lowest freq that is at least as high as the requested
+         * sampling rate */
+        for (i = 0; (unsigned) i < PA_ELEMENTSOF(freq_table); i++)
+            if (freq_table[i].rate >= u->sample_spec.rate && (cap->frequency & freq_table[i].cap)) {
                 u->sample_spec.rate = freq_table[i].rate;
                 cap->frequency = freq_table[i].cap;
                 break;
             }
+
+        if ((unsigned) i == PA_ELEMENTSOF(freq_table)) {
+            for (--i; i >= 0; i--) {
+                if (cap->frequency & freq_table[i].cap) {
+                    u->sample_spec.rate = freq_table[i].rate;
+                    cap->frequency = freq_table[i].cap;
+                    break;
+                }
+            }
+
+            if (i < 0) {
+                pa_log("Not suitable sample rate");
+                return -1;
+            }
         }
 
-        if (i < 0) {
-            pa_log("Not suitable sample rate");
-            return -1;
+        pa_assert((unsigned) i < PA_ELEMENTSOF(freq_table));
+
+        if (cap->capability.configured)
+            return 0;
+
+        if (u->sample_spec.channels <= 1) {
+            if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
+                cap->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+                u->sample_spec.channels = 1;
+            } else
+                u->sample_spec.channels = 2;
         }
-    }
 
-    pa_assert((unsigned) i < PA_ELEMENTSOF(freq_table));
-
-    if (cap->capability.configured)
-        return 0;
-
-    if (u->sample_spec.channels <= 1) {
-        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
-            cap->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
-            u->sample_spec.channels = 1;
-        } else
+        if (u->sample_spec.channels >= 2) {
             u->sample_spec.channels = 2;
-    }
 
-    if (u->sample_spec.channels >= 2) {
-        u->sample_spec.channels = 2;
+            if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_JOINT_STEREO)
+                cap->channel_mode = BT_A2DP_CHANNEL_MODE_JOINT_STEREO;
+            else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_STEREO)
+                cap->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+            else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL)
+                cap->channel_mode = BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL;
+            else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
+                cap->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+                u->sample_spec.channels = 1;
+            } else {
+                pa_log("No supported channel modes");
+                return -1;
+            }
+        }
 
-        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_JOINT_STEREO)
-            cap->channel_mode = BT_A2DP_CHANNEL_MODE_JOINT_STEREO;
-        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_STEREO)
-            cap->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
-        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL)
-            cap->channel_mode = BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL;
-        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
-            cap->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
-            u->sample_spec.channels = 1;
-        } else {
-            pa_log("No supported channel modes");
+        if (cap->block_length & BT_A2DP_BLOCK_LENGTH_16)
+            cap->block_length = BT_A2DP_BLOCK_LENGTH_16;
+        else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_12)
+            cap->block_length = BT_A2DP_BLOCK_LENGTH_12;
+        else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_8)
+            cap->block_length = BT_A2DP_BLOCK_LENGTH_8;
+        else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_4)
+            cap->block_length = BT_A2DP_BLOCK_LENGTH_4;
+        else {
+            pa_log_error("No supported block lengths");
             return -1;
         }
-    }
 
-    if (cap->block_length & BT_A2DP_BLOCK_LENGTH_16)
-        cap->block_length = BT_A2DP_BLOCK_LENGTH_16;
-    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_12)
-        cap->block_length = BT_A2DP_BLOCK_LENGTH_12;
-    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_8)
-        cap->block_length = BT_A2DP_BLOCK_LENGTH_8;
-    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_4)
-        cap->block_length = BT_A2DP_BLOCK_LENGTH_4;
-    else {
-        pa_log_error("No supported block lengths");
-        return -1;
-    }
+        if (cap->subbands & BT_A2DP_SUBBANDS_8)
+            cap->subbands = BT_A2DP_SUBBANDS_8;
+        else if (cap->subbands & BT_A2DP_SUBBANDS_4)
+            cap->subbands = BT_A2DP_SUBBANDS_4;
+        else {
+            pa_log_error("No supported subbands");
+            return -1;
+        }
 
-    if (cap->subbands & BT_A2DP_SUBBANDS_8)
-        cap->subbands = BT_A2DP_SUBBANDS_8;
-    else if (cap->subbands & BT_A2DP_SUBBANDS_4)
-        cap->subbands = BT_A2DP_SUBBANDS_4;
-    else {
-        pa_log_error("No supported subbands");
-        return -1;
-    }
+        if (cap->allocation_method & BT_A2DP_ALLOCATION_LOUDNESS)
+            cap->allocation_method = BT_A2DP_ALLOCATION_LOUDNESS;
+        else if (cap->allocation_method & BT_A2DP_ALLOCATION_SNR)
+            cap->allocation_method = BT_A2DP_ALLOCATION_SNR;
 
-    if (cap->allocation_method & BT_A2DP_ALLOCATION_LOUDNESS)
-        cap->allocation_method = BT_A2DP_ALLOCATION_LOUDNESS;
-    else if (cap->allocation_method & BT_A2DP_ALLOCATION_SNR)
-        cap->allocation_method = BT_A2DP_ALLOCATION_SNR;
+        cap->min_bitpool = (uint8_t) PA_MAX(MIN_BITPOOL, cap->min_bitpool);
+        cap->max_bitpool = (uint8_t) PA_MIN(a2dp_default_bitpool(cap->frequency, cap->channel_mode), cap->max_bitpool);
 
-    cap->min_bitpool = (uint8_t) PA_MAX(MIN_BITPOOL, cap->min_bitpool);
-    cap->max_bitpool = (uint8_t) PA_MIN(a2dp_default_bitpool(cap->frequency, cap->channel_mode), cap->max_bitpool);
-
-    /* Now convigure the MPEG caps if we have them */
-    if (u->a2dp.has_mpeg) {
+    } else {
+        /* Now configure the MPEG caps if we have them */
         int rate;
+
+        pa_assert(u->a2dp.has_mpeg);
 
         mcap = &u->a2dp.mpeg_capabilities;
         rate = u->sample_spec.rate;
@@ -952,7 +955,12 @@ static int set_conf(struct userdata *u) {
         } else if (u->a2dp.mode == A2DP_MODE_MPEG) {
             /* available payload per packet */
             u->block_size = 1152*4; /* this is the size of an IEC61937 frame for MPEG layer 3 */
-            u->leftover_bytes = 0;
+        }
+
+        u->leftover_bytes = 0;
+        if (u->write_memchunk.memblock) {
+            pa_memblock_unref(u->write_memchunk.memblock);
+            pa_memchunk_reset(&u->write_memchunk);
         }
     } else
         u->block_size = u->link_mtu;
