@@ -1076,7 +1076,8 @@ modlibexec_LTLIBRARIES += \
 		libalsa-util.la \
 		module-alsa-sink.la \
 		module-alsa-source.la \
-		module-alsa-card.la
+		module-alsa-card.la \
+		module-alsa-jack-detect.la
 
 dist_alsaprofilesets_DATA = \
 		modules/alsa/mixer/profile-sets/default.conf \
@@ -1269,6 +1270,7 @@ SYMDEF_FILES = \
 		module-alsa-sink-symdef.h \
 		module-alsa-source-symdef.h \
 		module-alsa-card-symdef.h \
+		modules/alsa/module-alsa-jack-detect-symdef.h\
 		module-coreaudio-detect-symdef.h \
 		module-coreaudio-device-symdef.h \
 		module-solaris-symdef.h \
@@ -1601,6 +1603,11 @@ module_alsa_card_la_SOURCES = modules/alsa/module-alsa-card.c
 module_alsa_card_la_LDFLAGS = $(MODULE_LDFLAGS)
 module_alsa_card_la_LIBADD = $(MODULE_LIBADD) $(ASOUNDLIB_LIBS) libalsa-util.la
 module_alsa_card_la_CFLAGS = $(AM_CFLAGS) $(ASOUNDLIB_CFLAGS)
+
+module_alsa_jack_detect_la_SOURCES = modules/alsa/module-alsa-jack-detect.c
+module_alsa_jack_detect_la_LDFLAGS = $(MODULE_LDFLAGS)
+module_alsa_jack_detect_la_LIBADD = $(MODULE_LIBADD) $(ASOUNDLIB_LIBS) libalsa-util.la
+module_alsa_jack_detect_la_CFLAGS = $(AM_CFLAGS) $(ASOUNDLIB_CFLAGS)
 
 # Solaris
 

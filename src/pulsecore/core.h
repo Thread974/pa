@@ -113,6 +113,8 @@ typedef enum pa_core_hook {
     PA_CORE_HOOK_CARD_PUT,
     PA_CORE_HOOK_CARD_UNLINK,
     PA_CORE_HOOK_CARD_PROFILE_CHANGED,
+    PA_CORE_HOOK_JACK_INSERT,
+    PA_CORE_HOOK_JACK_REMOVE,
     PA_CORE_HOOK_MAX
 } pa_core_hook_t;
 
