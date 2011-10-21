@@ -60,6 +60,7 @@ struct device {
 struct userdata {
     pa_core *core;
     pa_hashmap *devices;
+    pa_hashmap *input_devices;
 
     pa_bool_t use_tsched:1;
     pa_bool_t ignore_dB:1;
@@ -71,6 +72,9 @@ struct userdata {
 
     int inotify_fd;
     pa_io_event *inotify_io;
+
+    int inotify_input_fd;
+    pa_io_event *inotify_input_io;
 };
 
 static const char* const valid_modargs[] = {
@@ -81,6 +85,7 @@ static const char* const valid_modargs[] = {
 };
 
 static int setup_inotify(struct userdata *u);
+static int setup_input_notify(struct userdata *u);
 
 static void device_free(struct device *d) {
     pa_assert(d);
@@ -161,6 +166,21 @@ static pa_bool_t pcm_is_modem(const char *card_idx, const char *pcm) {
     pa_xfree(sysfs_path);
 
     return is_modem;
+}
+
+static const char *path_get_input_id(const char *path) {
+    const char *e;
+
+    if (!path)
+        return NULL;
+
+    if (!(e = strrchr(path, '/')))
+        return NULL;
+
+    if (!pa_startswith(e, "/event"))
+        return NULL;
+
+    return e + 6;
 }
 
 static pa_bool_t is_card_busy(const char *id) {
@@ -352,6 +372,40 @@ static void verify_access(struct userdata *u, struct device *d) {
     }
 }
 
+static void verify_input_access(struct userdata *u, struct device *d) {
+    char *cd;
+    char *args;
+    pa_card *card;
+    pa_bool_t accessible;
+
+    pa_assert(u);
+    pa_assert(d);
+
+    cd = pa_sprintf_malloc("%s/input/event%s", udev_get_dev_path(u->udev), path_get_input_id(d->path));
+    accessible = access(cd, R_OK) >= 0;
+    pa_log_debug("%s is accessible: %s", cd, pa_yes_no(accessible));
+
+    if (d->module == PA_INVALID_INDEX) {
+
+        /* If we are not loaded, try to load */
+        if (accessible) {
+            pa_module *m;
+
+            args = pa_sprintf_malloc("device_id=\"%s\""
+                            "card_name=\"%s\" ", cd, d->card_name);
+
+            pa_log_debug("Loading module-alsa-jack detect with arguments '%s'", args);
+            m = pa_module_load(u->core, "module-alsa-jack-detect", args);
+            if (m) {
+                  d->module = m->index;
+                  pa_log_info("Card %s (%s) jack module loaded.", d->path, d->card_name);
+            } else
+                  pa_log_info("Card %s (%s) failed to load jack module.", d->path, d->card_name);
+        }
+    }
+    pa_xfree(cd);
+}
+
 static void card_changed(struct userdata *u, struct udev_device *dev) {
     struct device *d;
     const char *path;
@@ -363,6 +417,8 @@ static void card_changed(struct userdata *u, struct udev_device *dev) {
 
     /* Maybe /dev/snd is now available? */
     setup_inotify(u);
+
+    setup_input_notify(u);
 
     path = udev_device_get_devpath(dev);
 
@@ -421,6 +477,53 @@ static void remove_card(struct userdata *u, struct udev_device *dev) {
     device_free(d);
 }
 
+static void input_changed(struct userdata *u, struct udev_device *dev) {
+    struct device *d;
+    const char *path;
+    const char *t;
+    char *n;
+
+    pa_assert(u);
+    pa_assert(dev);
+
+    /* Maybe /dev/snd is now available? */
+    setup_inotify(u);
+
+    setup_input_notify(u);
+
+    path = udev_device_get_devpath(dev);
+
+    if ((d = pa_hashmap_get(u->input_devices, path))) {
+        verify_input_access(u, d);
+        return;
+    }
+
+    d = pa_xnew0(struct device, 1);
+    d->path = pa_xstrdup(path);
+    d->module = PA_INVALID_INDEX;
+    PA_INIT_RATELIMIT(d->ratelimit, 10*PA_USEC_PER_SEC, 5);
+    pa_hashmap_put(u->input_devices, d->path, d);
+
+    verify_input_access(u, d);
+}
+
+static void remove_input(struct userdata *u, struct udev_device *dev) {
+    struct device *d;
+
+    pa_assert(u);
+    pa_assert(dev);
+
+    if (!(d = pa_hashmap_remove(u->input_devices, udev_device_get_devpath(dev))))
+        return;
+
+    pa_log_info("Input %s removed.", d->path);
+
+    if (d->module != PA_INVALID_INDEX)
+        pa_module_unload_request_by_index(u->core, d->module, TRUE);
+
+    device_free(d);
+}
+
 static void process_device(struct userdata *u, struct udev_device *dev) {
     const char *action, *ff;
 
@@ -440,19 +543,31 @@ static void process_device(struct userdata *u, struct udev_device *dev) {
 
     action = udev_device_get_action(dev);
 
-    if (action && pa_streq(action, "remove"))
-        remove_card(u, dev);
-    else if ((!action || pa_streq(action, "change")) && udev_device_get_property_value(dev, "SOUND_INITIALIZED"))
-        card_changed(u, dev);
+    if (path_get_card_id(udev_device_get_devpath(dev))) {
 
-    /* For an explanation why we don't look for 'add' events here
-     * have a look into /lib/udev/rules.d/78-sound-card.rules! */
+        if (action && pa_streq(action, "remove"))
+            remove_card(u, dev);
+        else if ((!action || pa_streq(action, "change")) &&
+                 udev_device_get_property_value(dev, "SOUND_INITIALIZED"))
+            card_changed(u, dev);
+
+        /* For an explanation why we don't look for 'add' events here
+         * have a look into /lib/udev/rules.d/78-sound-card.rules! */
+
+       } else if (path_get_input_id(udev_device_get_devpath(dev)) &&
+           strstr(udev_device_get_property_value(dev, "DEVPATH"), "sound")) {
+            /* input devices for Jack insertion are handled slightly differently */
+            if (action && pa_streq(action, "remove"))
+                remove_input(u, dev);
+            else if (!action || pa_streq(action, "change") || pa_streq(action, "add"))
+                input_changed(u, dev);
+       }
 }
 
 static void process_path(struct userdata *u, const char *path) {
     struct udev_device *dev;
 
-    if (!path_get_card_id(path))
+    if (!path_get_card_id(path) && !path_get_input_id(path))
         return;
 
     if (!(dev = udev_device_new_from_syspath(u->udev, path))) {
@@ -481,13 +596,12 @@ static void monitor_cb(
         goto fail;
     }
 
-    if (!path_get_card_id(udev_device_get_devpath(dev))) {
+    if (path_get_card_id(udev_device_get_devpath(dev)) ||
+       path_get_input_id(udev_device_get_devpath(dev))) {
+        process_device(u, dev);
         udev_device_unref(dev);
-        return;
     }
 
-    process_device(u, dev);
-    udev_device_unref(dev);
     return;
 
 fail:
@@ -517,6 +631,21 @@ static pa_bool_t control_node_belongs_to_device(
     pa_bool_t b;
 
     cd = pa_sprintf_malloc("controlC%s", path_get_card_id(d->path));
+    b = pa_streq(node, cd);
+    pa_xfree(cd);
+
+    return b;
+}
+
+static pa_bool_t input_node_belongs_to_device(
+        struct device *d,
+        const char *node) {
+
+    char *cd;
+    pa_bool_t b;
+
+    cd = pa_sprintf_malloc("event%s", path_get_input_id(d->path));
+
     b = pa_streq(node, cd);
     pa_xfree(cd);
 
@@ -615,6 +744,82 @@ fail:
     }
 }
 
+static void input_notify_cb( pa_mainloop_api*a, pa_io_event* e, int fd,
+    pa_io_event_flags_t events, void *userdata) {
+
+    struct {
+        struct inotify_event e;
+        char name[NAME_MAX];
+    } buf;
+    struct userdata *u = userdata;
+    static int type = 0;
+    pa_bool_t deleted = FALSE;
+    struct device *d;
+    void *state;
+
+    for (;;) {
+        ssize_t r;
+        struct inotify_event *event;
+
+        pa_zero(buf);
+        if ((r = pa_read(fd, &buf, sizeof(buf), &type)) <= 0) {
+            if (r < 0 && errno == EAGAIN)
+                break;
+            pa_log("read() from inotify failed: %s", r < 0 ? pa_cstrerror(errno) : "EOF");
+            goto fail;
+        }
+
+        event = &buf.e;
+        while (r > 0) {
+            size_t len;
+            if ((size_t) r < sizeof(struct inotify_event)) {
+                pa_log("read() too short.");
+                goto fail;
+            }
+
+            len = sizeof(struct inotify_event) + event->len;
+            if ((size_t) r < len) {
+                pa_log("Payload missing.");
+                goto fail;
+            }
+
+            /* From udev we get the guarantee that the control
+             * device's ACL is changed last. To avoid races when ACLs
+             * are changed we hence watch only the control device */
+            if (((event->mask & IN_ATTRIB) && pa_startswith(event->name, "event")))
+                PA_HASHMAP_FOREACH(d, u->input_devices, state)
+                    if (input_node_belongs_to_device(d, event->name))
+                        d->need_verify = TRUE;
+
+            /* /dev/input/ might have been removed */
+            if ((event->mask & (IN_DELETE_SELF|IN_MOVE_SELF)))
+                deleted = TRUE;
+            event = (struct inotify_event*) ((uint8_t*) event + len);
+            r -= len;
+        }
+    }
+
+    PA_HASHMAP_FOREACH(d, u->input_devices, state)
+        if (d->need_verify) {
+            d->need_verify = FALSE;
+            verify_input_access(u, d);
+        }
+
+    if (!deleted)
+        return;
+
+fail:
+    if (u->inotify_input_io) {
+        a->io_free(u->inotify_input_io);
+        u->inotify_input_io = NULL;
+    }
+
+    if (u->inotify_input_fd >= 0) {
+        pa_close(u->inotify_input_fd);
+        u->inotify_input_fd = -1;
+    }
+}
+
 static int setup_inotify(struct userdata *u) {
     char *dev_snd;
     int r;
@@ -659,6 +864,43 @@ static int setup_inotify(struct userdata *u) {
     return 0;
 }
 
+static int setup_input_notify(struct userdata *u) {
+    char *dev_input;
+    int r;
+    if (u->inotify_input_fd >= 0)
+        return 0;
+
+    if ((u->inotify_input_fd = inotify_init1(IN_CLOEXEC|IN_NONBLOCK)) < 0) {
+        pa_log("inotify_init1() failed: %s", pa_cstrerror(errno));
+        return -1;
+    }
+
+    dev_input = pa_sprintf_malloc("%s/input", udev_get_dev_path(u->udev));
+    r = inotify_add_watch(u->inotify_input_fd, dev_input, IN_ATTRIB|IN_CLOSE_WRITE|IN_DELETE_SELF|IN_MOVE_SELF);
+    pa_xfree(dev_input);
+    if (r < 0) {
+        int saved_errno = errno;
+        pa_close(u->inotify_input_fd);
+        u->inotify_input_fd = -1;
+
+        if (saved_errno == ENOENT) {
+            pa_log_debug("/dev/input/ is apparently not existing yet, retrying to create inotify watch later.");
+            return 0;
+        }
+
+        if (saved_errno == ENOSPC) {
+            pa_log("You apparently ran out of inotify watches, probably because Tracker/Beagle took them all away.");
+        return 0;
+        }
+
+        pa_log("inotify_add_watch() failed: %s", pa_cstrerror(saved_errno));
+        return -1;
+    }
+    pa_assert_se(u->inotify_input_io = u->core->mainloop->io_new(u->core->mainloop, u->inotify_input_fd, PA_IO_EVENT_INPUT, input_notify_cb, u));
+
+    return 0;
+}
+
 int pa__init(pa_module *m) {
     struct userdata *u = NULL;
     pa_modargs *ma;
@@ -678,7 +920,9 @@ int pa__init(pa_module *m) {
     m->userdata = u = pa_xnew0(struct userdata, 1);
     u->core = m->core;
     u->devices = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
+    u->input_devices = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
     u->inotify_fd = -1;
+    u->inotify_input_fd = -1;
 
     if (pa_modargs_get_value_boolean(ma, "tsched", &use_tsched) < 0) {
         pa_log("Failed to parse tsched= argument.");
@@ -704,6 +948,9 @@ int pa__init(pa_module *m) {
     }
 
     if (setup_inotify(u) < 0)
+        goto fail;
+
+    if (setup_input_notify(u) < 0)
         goto fail;
 
     if (!(u->monitor = udev_monitor_new_from_netlink(u->udev, "udev"))) {
@@ -739,6 +986,11 @@ int pa__init(pa_module *m) {
     }
 
     if (udev_enumerate_add_match_subsystem(enumerate, "sound") < 0) {
+        pa_log("Failed to match to subsystem.");
+        goto fail;
+    }
+
+     if (udev_enumerate_add_match_subsystem(enumerate, "input") < 0) {
         pa_log("Failed to match to subsystem.");
         goto fail;
     }
@@ -796,6 +1048,12 @@ void pa__done(pa_module *m) {
     if (u->inotify_fd >= 0)
         pa_close(u->inotify_fd);
 
+    if (u->inotify_input_io)
+        m->core->mainloop->io_free(u->inotify_input_io);
+
+    if (u->inotify_input_fd >= 0)
+        pa_close(u->inotify_input_fd);
+
     if (u->devices) {
         struct device *d;
 
@@ -803,6 +1061,15 @@ void pa__done(pa_module *m) {
             device_free(d);
 
         pa_hashmap_free(u->devices, NULL, NULL);
+    }
+
+   if (u->input_devices) {
+        struct device *d;
+
+        while ((d = pa_hashmap_steal_first(u->input_devices)))
+            device_free(d);
+
+        pa_hashmap_free(u->input_devices, NULL, NULL);
     }
 
     pa_xfree(u);
