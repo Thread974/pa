@@ -86,6 +86,94 @@ static void* internal_thread_func(void *userdata) {
     return NULL;
 }
 
+/* gprof-helper.c -- preload library to profile pthread-enabled programs
+ *
+ * Authors: Sam Hocevar <sam at zoy dot org>
+ *          Daniel Jönsson <danieljo at fagotten dot org>
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the Do What The Fuck You Want To
+ *  Public License as published by Banlu Kemiyatorn. See
+ *  http://sam.zoy.org/projects/COPYING.WTFPL for more details.
+ *
+ * Compilation example:
+ * gcc -shared -fPIC gprof-helper.c -o gprof-helper.so -lpthread -ldl
+ *
+ * Usage example:
+ * LD_PRELOAD=./gprof-helper.so your_program
+ */
+
+/* Our data structure passed to the wrapper */
+typedef struct wrapper_s
+{
+    void * (*start_routine)(void *);
+    void * arg;
+
+    pthread_mutex_t lock;
+    pthread_cond_t  wait;
+
+    struct itimerval itimer;
+
+} wrapper_t;
+
+/* The wrapper function in charge for setting the itimer value */
+static void * wrapper_routine(void * data)
+{
+    /* Put user data in thread-local variables */
+    void * (*start_routine)(void *) = ((wrapper_t*)data)->start_routine;
+    void * arg = ((wrapper_t*)data)->arg;
+
+    /* Set the profile timer value */
+    setitimer(ITIMER_PROF, &((wrapper_t*)data)->itimer, NULL);
+
+    /* Tell the calling thread that we don't need its data anymore */
+    pthread_mutex_lock(&((wrapper_t*)data)->lock);
+    pthread_cond_signal(&((wrapper_t*)data)->wait);
+    pthread_mutex_unlock(&((wrapper_t*)data)->lock);
+
+    /* Call the real function */
+    return start_routine(arg);
+}
+
+/* Our wrapper function for the real pthread_create() */
+static int hacked_pthread_create(pthread_t *__restrict thread,
+                   __const pthread_attr_t *__restrict attr,
+                   void * (*start_routine)(void *),
+                   void *__restrict arg)
+{
+    wrapper_t wrapper_data;
+    int i_return;
+    /* Initialize the wrapper structure */
+    wrapper_data.start_routine = start_routine;
+    wrapper_data.arg = arg;
+    getitimer(ITIMER_PROF, &wrapper_data.itimer);
+    pthread_cond_init(&wrapper_data.wait, NULL);
+    pthread_mutex_init(&wrapper_data.lock, NULL);
+    pthread_mutex_lock(&wrapper_data.lock);
+
+    fprintf(stderr, "pthreads: pthread_create wrapper called %lu.%03lu\n", wrapper_data.itimer.it_interval.tv_sec, wrapper_data.itimer.it_interval.tv_usec/1000);
+    fprintf(stderr, "pthreads: pthread_create wrapper called %lu.%03lu\n", wrapper_data.itimer.it_value.tv_sec, wrapper_data.itimer.it_value.tv_usec/1000);
+
+    /* The real pthread_create call */
+    i_return = pthread_create(thread,
+                                   attr,
+                                   &wrapper_routine,
+                                   &wrapper_data);
+
+    /* If the thread was successfully spawned, wait for the data
+     * to be released */
+    if(i_return == 0)
+    {
+        pthread_cond_wait(&wrapper_data.wait, &wrapper_data.lock);
+    }
+
+    pthread_mutex_unlock(&wrapper_data.lock);
+    pthread_mutex_destroy(&wrapper_data.lock);
+    pthread_cond_destroy(&wrapper_data.wait);
+
+    return i_return;
+}
+
 pa_thread* pa_thread_new(const char *name, pa_thread_func_t thread_func, void *userdata) {
     pa_thread *t;
 
@@ -96,7 +184,9 @@ pa_thread* pa_thread_new(const char *name, pa_thread_func_t thread_func, void *u
     t->thread_func = thread_func;
     t->userdata = userdata;
 
-    if (pthread_create(&t->id, NULL, internal_thread_func, t) < 0) {
+    pa_log_debug("new thread");
+
+    if (hacked_pthread_create(&t->id, NULL, internal_thread_func, t) < 0) {
         pa_xfree(t);
         return NULL;
     }

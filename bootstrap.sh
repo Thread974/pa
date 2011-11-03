@@ -98,7 +98,8 @@ else
     run_versioned automake "$VERSION" --copy --foreign --add-missing
 
     if test "x$NOCONFIGURE" = "x"; then
-        CFLAGS="$CFLAGS -g -O0" ./configure --sysconfdir=/etc --localstatedir=/var --enable-force-preopen "$@"
+        echo FREDFREDFREDFRED
+        CFLAGS="$CFLAGS -fno-omit-frame-pointer -g -O0" ./configure --sysconfdir=/etc --localstatedir=/var --enable-force-preopen "$@"
         make clean
     fi
 fi

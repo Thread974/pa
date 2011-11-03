@@ -150,6 +150,10 @@ static void signal_callback(pa_mainloop_api*m, pa_signal_event *e, int sig, void
             pa_module_load(userdata, "module-cli-protocol-unix", NULL);
             break;
 #endif
+#ifdef SIGPROF
+        case SIGPROF:
+            break;
+#endif
 
 #ifdef SIGHUP
         case SIGHUP: {
@@ -1055,7 +1059,9 @@ int main(int argc, char *argv[]) {
 #ifdef SIGHUP
     pa_signal_new(SIGHUP, signal_callback, c);
 #endif
-
+#ifdef SIGPROF
+    pa_signal_new(SIGPROF, signal_callback, c);
+#endif
 #ifdef OS_IS_WIN32
     win32_timer = pa_mainloop_get_api(mainloop)->time_new(pa_mainloop_get_api(mainloop), pa_gettimeofday(&win32_tv), message_cb, NULL);
 #endif
