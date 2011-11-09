@@ -1016,6 +1016,7 @@ modlibexec_LTLIBRARIES += \
 		module-loopback.la \
 		module-virtual-sink.la \
 		module-virtual-source.la \
+		module-loopback-on-connect.la \
 		module-switch-on-connect.la \
 		module-filter-apply.la \
 		module-filter-heuristics.la
@@ -1316,6 +1317,7 @@ SYMDEF_FILES = \
 		module-loopback-symdef.h \
 		module-virtual-sink-symdef.h \
 		module-virtual-source-symdef.h \
+		module-loopback-on-connect-symdef.h \
 		module-switch-on-connect-symdef.h \
 		module-filter-apply-symdef.h \
 		module-filter-heuristics-symdef.h
@@ -1478,6 +1480,10 @@ module_combine_la_LIBADD = $(MODULE_LIBADD)
 module_combine_sink_la_SOURCES = modules/module-combine-sink.c
 module_combine_sink_la_LDFLAGS = $(MODULE_LDFLAGS)
 module_combine_sink_la_LIBADD = $(MODULE_LIBADD)
+
+module_loopback_on_connect_la_SOURCES = modules/module-loopback-on-connect.c
+module_loopback_on_connect_la_LDFLAGS = $(MODULE_LDFLAGS)
+module_loopback_on_connect_la_LIBADD = $(MODULE_LIBADD)
 
 module_switch_on_connect_la_SOURCES = modules/module-switch-on-connect.c
 module_switch_on_connect_la_LDFLAGS = $(MODULE_LDFLAGS)
