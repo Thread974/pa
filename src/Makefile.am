@@ -1213,7 +1213,6 @@ modlibexec_LTLIBRARIES += \
 		libbluetooth-util.la \
 		module-bluetooth-proximity.la \
 		module-bluetooth-discover.la \
-		libbluetooth-ipc.la \
 		libbluetooth-sbc.la \
 		module-bluetooth-device.la
 
@@ -1884,14 +1883,6 @@ libbluetooth_sbc_la_LIBADD = $(MODULE_LIBADD)
 libbluetooth_sbc_la_CFLAGS = $(AM_CFLAGS) -I$(top_srcdir)/src/modules/bluetooth/sbc
 BLUETOOTH_SBC_FILES = $(subst modules/bluetooth/,,$(libbluetooth_sbc_la_SOURCES))
 
-libbluetooth_ipc_la_SOURCES = \
-		modules/bluetooth/a2dp-codecs.h \
-		modules/bluetooth/ipc.c modules/bluetooth/ipc.h
-libbluetooth_ipc_la_LDFLAGS = -avoid-version
-libbluetooth_ipc_la_LIBADD = $(AM_LIBADD) libpulsecore-@PA_MAJORMINOR@.la libpulsecommon-@PA_MAJORMINOR@.la libpulse.la
-libbluetooth_ipc_la_CFLAGS = $(AM_CFLAGS)
-BLUETOOTH_IPC_FILES = $(subst modules/bluetooth/,,$(libbluetooth_ipc_la_SOURCES)) rtp.h
-
 libbluetooth_util_la_SOURCES = modules/bluetooth/bluetooth-util.c modules/bluetooth/bluetooth-util.h
 libbluetooth_util_la_LDFLAGS = -avoid-version
 libbluetooth_util_la_LIBADD = $(MODULE_LIBADD) $(DBUS_LIBS)
@@ -1899,7 +1890,7 @@ libbluetooth_util_la_CFLAGS = $(AM_CFLAGS) $(DBUS_CFLAGS)
 
 module_bluetooth_device_la_SOURCES = modules/bluetooth/module-bluetooth-device.c modules/bluetooth/rtp.h
 module_bluetooth_device_la_LDFLAGS = $(MODULE_LDFLAGS)
-module_bluetooth_device_la_LIBADD = $(MODULE_LIBADD) $(DBUS_LIBS) libbluetooth-util.la libbluetooth-ipc.la libbluetooth-sbc.la
+module_bluetooth_device_la_LIBADD = $(MODULE_LIBADD) $(DBUS_LIBS) libbluetooth-util.la libbluetooth-sbc.la
 module_bluetooth_device_la_CFLAGS = $(AM_CFLAGS) $(DBUS_CFLAGS) -I$(top_srcdir)/src/modules/bluetooth/sbc
 
 # Apple Airtunes/RAOP
@@ -1962,10 +1953,6 @@ update-sbc:
 	for i in $(BLUETOOTH_SBC_FILES) ; do \
 		wget -O /dev/null http://git.kernel.org/\?p=bluetooth/bluez.git\;a=blob_plain\;f=$$i ; \
 		wget -O $(top_srcdir)/src/modules/bluetooth/$$i http://git.kernel.org/\?p=bluetooth/bluez.git\;a=blob_plain\;f=$$i ; \
-	done
-	for i in $(BLUETOOTH_IPC_FILES); do \
-		wget -O /dev/null http://git.kernel.org/\?p=bluetooth/bluez.git\;a=blob_plain\;f=audio/$$i ; \
-		wget -O $(top_srcdir)/src/modules/bluetooth/$$i http://git.kernel.org/\?p=bluetooth/bluez.git\;a=blob_plain\;f=audio/$$i ; \
 	done
 
 update-reserve:
