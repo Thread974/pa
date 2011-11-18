@@ -155,6 +155,7 @@ struct userdata {
     pa_source *source;
 
     pa_thread_mq thread_mq;
+	pa_bool_t thread_mq_installed;
     pa_rtpoll *rtpoll;
     pa_rtpoll_item *rtpoll_item;
     pa_thread *thread;
@@ -578,6 +579,7 @@ static int hsp_process_push(struct userdata *u) {
         iov.iov_base = p;
         iov.iov_len = pa_memblock_get_length(memchunk.memblock);
         l = recvmsg(u->stream_fd, &m, 0);
+
         pa_memblock_release(memchunk.memblock);
 
         if (l <= 0) {
@@ -905,6 +907,7 @@ static void thread_func(void *userdata) {
         pa_make_realtime(u->core->realtime_priority);
 
     pa_thread_mq_install(&u->thread_mq);
+    u->thread_mq_installed = TRUE;
 
     if (bt_transport_acquire(u, TRUE) < 0)
         goto fail;
@@ -1793,9 +1796,12 @@ static void stop_thread(struct userdata *u) {
         u->source = NULL;
     }
 
-    if (u->rtpoll) {
+    if (u->thread_mq_installed) {
         pa_thread_mq_done(&u->thread_mq);
+	u->thread_mq_installed = FALSE;
+    }
 
+    if (u->rtpoll) {
         pa_rtpoll_free(u->rtpoll);
         u->rtpoll = NULL;
     }
