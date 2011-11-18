@@ -1,0 +1,95 @@
+/*
+    This file is provided under a dual LGPL/BSD license.  When using
+    or redistributing this file, you may do so under either license.
+
+    LGPL LICENSE SUMMARY
+
+    Copyright(c) 2011. Intel Corporation. All rights reserved.
+
+    This library is free software; you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as
+    published by the Free Software Foundation; either version 2.1 of the
+    License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+    USA.
+
+    BSD LICENSE
+
+    Copyright (c) 2011. Intel Corporation. All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+      - Redistributions of source code must retain the above copyright
+        notice, this list of conditions and the following disclaimer.
+      - Redistributions in binary form must reproduce the above copyright
+        notice, this list of conditions and the following disclaimer in
+        the documentation and/or other materials provided with the
+        distribution.
+      - Neither the name of Intel Corporation nor the names of its
+        contributors may be used to endorse or promote products derived
+        from this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+    Contact Information for Intel:
+        Intel Corporation
+        2200 Mission College Blvd.
+        Santa Clara, CA  97052
+*/
+
+/*
+* Filter for conversion from 11025Hz to 44100Hz
+* Coefficients per phase   = 28
+* Upsample rate            = 4
+* Downsample rate          = 1
+* Resample frequency       = 44100
+* Filter order             = 112
+* Pass band frequency      = 4300
+* Kaiser window beta value = 7.00
+*/
+float const coeff_11025_44100_float_sse[112] __attribute__ ((aligned (16)))= {
+/** Phase 0 **/
+0.000270824781276F, -0.001049971792929F, 0.001905539765557F, -0.001322896068515F, -0.002606550831870F, 0.010141737597356F,
+-0.017627670802366F, 0.017224804603754F, -0.000280218020873F, -0.036393520015525F, 0.084602203539409F, -0.122106332883068F,
+0.103933865543262F, 0.767669311755740F, 0.301659176073773F, -0.158863558938069F, 0.066432344616423F, -0.004520031138210F,
+-0.025120967153731F, 0.028538088641372F, -0.018050433911866F, 0.005637752157783F, 0.001956010608566F, -0.003886991191780F,
+0.002650080404672F, -0.000955102185779F, 0.000070818823965F, 0.000071776124723F,
+/** Phase 1 **/
+0.000286315154070F, -0.000755769329405F, 0.000733907748056F, 0.001043636889571F, -0.005270052342196F, 0.010300902388418F,
+-0.011308213426684F, 0.002073756687226F, 0.020360074318170F, -0.050361369914680F, 0.071007154291797F, -0.054407758473636F,
+-0.050672843267144F, 0.673173927253636F, 0.505548232094039F, -0.139574271221684F, 0.016078229146552F, 0.036144599064192F,
+-0.044859621913187F, 0.030512096210584F, -0.011059750768277F, -0.002364711175930F, 0.006944895898260F, -0.005545254153992F,
+0.002446225320523F, -0.000333872233344F, -0.000310223752486F, 0.000189669404499F,
+/** Phase 2 **/
+0.000189669404499F, -0.000310223752486F, -0.000333872233344F, 0.002446225320523F, -0.005545254153992F, 0.006944895898260F,
+-0.002364711175930F, -0.011059750768277F, 0.030512096210584F, -0.044859621913187F, 0.036144599064192F, 0.016078229146552F,
+-0.139574271221684F, 0.505548232094039F, 0.673173927253636F, -0.050672843267144F, -0.054407758473636F, 0.071007154291797F,
+-0.050361369914680F, 0.020360074318170F, 0.002073756687226F, -0.011308213426684F, 0.010300902388418F, -0.005270052342196F,
+0.001043636889571F, 0.000733907748056F, -0.000755769329405F, 0.000286315154070F,
+/** Phase 3 **/
+0.000071776124723F, 0.000070818823965F, -0.000955102185779F, 0.002650080404672F, -0.003886991191780F, 0.001956010608566F,
+0.005637752157783F, -0.018050433911866F, 0.028538088641372F, -0.025120967153731F, -0.004520031138210F, 0.066432344616423F,
+-0.158863558938069F, 0.301659176073773F, 0.767669311755740F, 0.103933865543262F, -0.122106332883068F, 0.084602203539409F,
+-0.036393520015525F, -0.000280218020873F, 0.017224804603754F, -0.017627670802366F, 0.010141737597356F, -0.002606550831870F,
+-0.001322896068515F, 0.001905539765557F, -0.001049971792929F, 0.000270824781276F
+};
