@@ -605,7 +605,7 @@ finish:
     pa_dbus_pending_free(p);
 }
 
-static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const char *endpoint, const char *uuid) {
+static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const char *endpoint, const char *uuid, void *caps, int caps_size) {
     DBusMessage *m;
     DBusMessageIter i, d;
     uint8_t codec = 0;
@@ -624,11 +624,14 @@ static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const
 
     pa_dbus_append_basic_variant_dict_entry(&d, "UUID", DBUS_TYPE_STRING, &uuid);
 
-    pa_dbus_append_basic_variant_dict_entry(&d, "Codec", DBUS_TYPE_BYTE, &codec);
-
     if (pa_streq(uuid, HFP_AG_UUID) || pa_streq(uuid, HFP_HS_UUID)) {
         uint8_t capability = 0;
+        pa_dbus_append_basic_variant_dict_entry(&d, "Codec", DBUS_TYPE_BYTE, &codec);
         pa_dbus_append_basic_array_variant_dict_entry(&d, "Capabilities", DBUS_TYPE_BYTE, &capability, 1);
+    } else if (caps) {
+        codec = 1;
+        pa_dbus_append_basic_variant_dict_entry(&d, "Codec", DBUS_TYPE_BYTE, &codec);
+        pa_dbus_append_basic_array_variant_dict_entry(&d, "Capabilities", DBUS_TYPE_BYTE, caps, caps_size);
     } else {
         a2dp_sbc_t capabilities;
 
@@ -643,6 +646,7 @@ static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const
         capabilities.min_bitpool = MIN_BITPOOL;
         capabilities.max_bitpool = MAX_BITPOOL;
 
+        pa_dbus_append_basic_variant_dict_entry(&d, "Codec", DBUS_TYPE_BYTE, &codec);
         pa_dbus_append_basic_array_variant_dict_entry(&d, "Capabilities", DBUS_TYPE_BYTE, &capabilities, sizeof(capabilities));
     }
 
@@ -653,14 +657,24 @@ static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const
 
 static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
     DBusMessage *m;
+    a2dp_mpeg_t mpeg_caps;
 
     pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.bluez.Adapter", "ListDevices"));
     send_and_add_to_pending(y, m, list_devices_reply, NULL);
 
-    register_endpoint(y, path, HFP_AG_ENDPOINT, HFP_AG_UUID);
-    register_endpoint(y, path, HFP_HS_ENDPOINT, HFP_HS_UUID);
-    register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID);
-    register_endpoint(y, path, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID);
+    register_endpoint(y, path, HFP_AG_ENDPOINT, HFP_AG_UUID, NULL, 0);
+    register_endpoint(y, path, HFP_HS_ENDPOINT, HFP_HS_UUID, NULL, 0);
+    register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, NULL, 0);
+//    register_endpoint(y, path, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID, NULL, 0);
+
+    mpeg_caps.layer = 1;
+    mpeg_caps.crc = 1;
+    mpeg_caps.channel_mode = 0xF;
+    mpeg_caps.rfa = 0;
+    mpeg_caps.mpf = 0;
+    mpeg_caps.frequency = 0x3;
+    mpeg_caps.bitrate = 1;
+    register_endpoint(y, path, A2DP_SINK_ENDPOINT"MP3", A2DP_SINK_UUID, &mpeg_caps, 2);
 }
 
 static void list_adapters_reply(DBusPendingCall *pending, void *userdata) {
