@@ -26,6 +26,7 @@
 #include <pulse/channelmap.h>
 #include <pulsecore/memblock.h>
 #include <pulsecore/memchunk.h>
+#include <pulsecore/cpu-x86.h>
 
 typedef struct pa_resampler pa_resampler;
 
@@ -45,6 +46,7 @@ typedef enum pa_resample_method {
     PA_RESAMPLER_AUTO, /* automatic select based on sample format */
     PA_RESAMPLER_COPY,
     PA_RESAMPLER_PEAKS,
+    PA_RESAMPLER_IA_SSE,
     PA_RESAMPLER_MAX
 } pa_resample_method_t;
 

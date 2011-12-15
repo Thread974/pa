@@ -1196,7 +1196,16 @@ AS_IF([test "x$enable_adrian_aec" != "xno"],
     [HAVE_ADRIAN_EC=1])
 AM_CONDITIONAL([HAVE_ADRIAN_EC], [test "x$HAVE_ADRIAN_EC" = "x1"])
 
+AC_ARG_ENABLE([ia-sse-resampler],
+    AS_HELP_STRING([--enable-ia-sse-resampler], [Enable the IA SSE-optimized resampler]))
 
+AS_IF([test "x$enable_ia_sse_resampler" != "xno"],
+# FIXME: check needed to see if SSE supported on host
+    [HAVE_IA_SSE_RESAMPLER=1],
+    [HAVE_IA_SSE_RESAMPLER=0])
+
+AM_CONDITIONAL([HAVE_IA_SSE_RESAMPLER], [test "x$HAVE_IA_SSE_RESAMPLER" = x1])
+AS_IF([test "x$HAVE_IA_SSE_RESAMPLER" = "x1"], AC_DEFINE([HAVE_IA_SSE_RESAMPLER], 1, [IA SSE Resampler]))
 
 ###################################
 #            Output               #
@@ -1353,6 +1362,7 @@ AS_IF([test "x$HAVE_ESOUND" = "x1"], ENABLE_ESOUND=yes, ENABLE_ESOUND=no)
 AS_IF([test "x$HAVE_ESOUND" = "x1" -a "x$USE_PER_USER_ESOUND_SOCKET" = "x1"], ENABLE_PER_USER_ESOUND_SOCKET=yes, ENABLE_PER_USER_ESOUND_SOCKET=no)
 AS_IF([test "x$enable_legacy_runtime_dir" != "xno"], ENABLE_LEGACY_RUNTIME_DIR=yes, ENABLE_LEGACY_RUNTIME_DIR=no)
 AS_IF([test "x$enable_legacy_database_entry_format" != "xno"], ENABLE_LEGACY_DATABASE_ENTRY_FORMAT=yes, ENABLE_LEGACY_DATABASE_ENTRY_FORMAT=no)
+AS_IF([test "x$HAVE_IA_SSE_RESAMPLER" = "x1"], ENABLE_IA_SSE_RESAMPLER=yes, ENABLE_IA_SSE_RESAMPLER=no)
 
 echo "
  ---{ $PACKAGE_NAME $VERSION }---
@@ -1397,6 +1407,7 @@ echo "
     Enable Adrian echo canceller:  ${ENABLE_ADRIAN_EC}
     Enable speex (resampler, AEC): ${ENABLE_SPEEX}
     Enable WebRTC echo canceller:  ${ENABLE_WEBRTC}
+    Enable IA optimized resampler: ${ENABLE_IA_SSE_RESAMPLER}
     Database
       tdb:                         ${ENABLE_TDB}
       gdbm:                        ${ENABLE_GDBM}

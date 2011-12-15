@@ -69,4 +69,6 @@ void pa_remap_func_init_sse(pa_cpu_x86_flag_t flags);
 
 void pa_convert_func_init_sse (pa_cpu_x86_flag_t flags);
 
+void pa_resample_init_ia_sse(pa_cpu_x86_flag_t flags);
+
 #endif /* foocpux86hfoo */

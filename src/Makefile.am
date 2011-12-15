@@ -665,6 +665,14 @@ libpulsecommon_@PA_MAJORMINOR@_la_CFLAGS += $(DBUS_CFLAGS)
 libpulsecommon_@PA_MAJORMINOR@_la_LIBADD += $(DBUS_LIBS)
 endif
 
+if HAVE_IA_SSE_RESAMPLER
+libpulsecommon_@PA_MAJORMINOR@_la_SOURCES += \
+		pulsecore/ia-sse-resampler/iasrc_resampler.c \
+		pulsecore/ia-sse-resampler/iasrc_resampler.h
+
+libpulsecommon_@PA_MAJORMINOR@_la_CFLAGS += -D__SSSE3__ -msse -msse2 -msse3 -march=core2 -mfpmath=sse
+endif
+
 ###################################
 #         Client library          #
 ###################################

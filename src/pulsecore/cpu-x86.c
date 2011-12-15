@@ -122,6 +122,7 @@ pa_bool_t pa_cpu_init_x86(pa_cpu_x86_flag_t *flags) {
         pa_volume_func_init_sse(*flags);
         pa_remap_func_init_sse(*flags);
         pa_convert_func_init_sse(*flags);
+        pa_resample_init_ia_sse(*flags);
     }
 
     return TRUE;

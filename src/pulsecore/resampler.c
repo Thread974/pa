@@ -44,6 +44,10 @@
 
 #include "resampler.h"
 
+#ifdef HAVE_IA_SSE_RESAMPLER
+#include "ia-sse-resampler/iasrc_resampler.h"
+#endif
+
 /* Number of samples of extra space we allow the resamplers to return */
 #define EXTRA_FRAMES 128
 
@@ -102,6 +106,12 @@ struct pa_resampler {
         struct AVResampleContext *state;
         pa_memchunk buf[PA_CHANNELS_MAX];
     } ffmpeg;
+#ifdef HAVE_IA_SSE_RESAMPLER
+    struct {
+        iaresamp_ctx * ctx;
+    } iaresamp_src;
+#endif
+
 };
 
 static int copy_init(pa_resampler *r);
@@ -114,10 +124,14 @@ static int peaks_init(pa_resampler*r);
 #ifdef HAVE_LIBSAMPLERATE
 static int libsamplerate_init(pa_resampler*r);
 #endif
+#ifdef HAVE_IA_SSE_RESAMPLER
+static int iaresamp_init(pa_resampler *r);
+#endif
 
 static void calc_map_table(pa_resampler *r);
 
-static int (* const init_table[])(pa_resampler*r) = {
+//static int (* const init_table[])(pa_resampler*r) = {
+static int (* init_table[])(pa_resampler*r) = {
 #ifdef HAVE_LIBSAMPLERATE
     [PA_RESAMPLER_SRC_SINC_BEST_QUALITY]   = libsamplerate_init,
     [PA_RESAMPLER_SRC_SINC_MEDIUM_QUALITY] = libsamplerate_init,
@@ -183,6 +197,9 @@ static int (* const init_table[])(pa_resampler*r) = {
     [PA_RESAMPLER_AUTO]                    = NULL,
     [PA_RESAMPLER_COPY]                    = copy_init,
     [PA_RESAMPLER_PEAKS]                   = peaks_init,
+#ifdef HAVE_IA_SSE_RESAMPLER
+    [PA_RESAMPLER_IA_SSE]                   = NULL,
+#endif
 };
 
 pa_resampler* pa_resampler_new(
@@ -205,6 +222,38 @@ pa_resampler* pa_resampler_new(
     pa_assert(method < PA_RESAMPLER_MAX);
 
     /* Fix method */
+
+#ifdef HAVE_IA_SSE_RESAMPLER
+    if (init_table[PA_RESAMPLER_IA_SSE] != NULL) {
+        if (method == PA_RESAMPLER_AUTO)
+            method = PA_RESAMPLER_IA_SSE; /* override default if possible */
+    } else  {
+        /* fall back to default if SSE not present on target */
+        if (method == PA_RESAMPLER_IA_SSE)
+            method = PA_RESAMPLER_AUTO;
+    }
+
+    if (method == PA_RESAMPLER_IA_SSE) {
+
+        pa_log_info("Trying to use intel-sse resampler");
+
+        if (flags & PA_RESAMPLER_VARIABLE_RATE) {
+            pa_log_info("Resampler 'intel-sse' cannot do variable rate, reverting to resampler 'auto'.");
+            method = PA_RESAMPLER_AUTO;
+        } else {
+
+            if(!iaresamplib_supported_conversion(a->rate, b->rate)) {
+
+                pa_log_info("conversion not supported inp rate %d out rate %d",
+                            a->rate, b->rate);
+
+                pa_log_info("reverting to resampler 'auto'");
+                method = PA_RESAMPLER_AUTO;
+            } else
+                pa_log_info("Using intel-sse resampler");
+        }
+    }
+#endif
 
     if (!(flags & PA_RESAMPLER_VARIABLE_RATE) && a->rate == b->rate) {
         pa_log_info("Forcing resampler 'copy', because of fixed, identical sample rates.");
@@ -298,8 +347,12 @@ pa_resampler* pa_resampler_new(
 
         } else
             r->work_format = a->format;
-
-    } else
+    }
+#ifdef HAVE_IA_SSE_RESAMPLER
+    else if(method == PA_RESAMPLER_IA_SSE)
+        r->work_format = PA_SAMPLE_FLOAT32NE;
+#endif
+    else
         r->work_format = PA_SAMPLE_FLOAT32NE;
 
     pa_log_info("Using %s as working format.", pa_sample_format_to_string(r->work_format));
@@ -491,8 +544,27 @@ static const char * const resample_methods[] = {
     "ffmpeg",
     "auto",
     "copy",
-    "peaks"
+    "peaks",
+#ifdef HAVE_IA_SSE_RESAMPLER
+    "intel-sse"
+#endif
 };
+
+void pa_resample_init_ia_sse(pa_cpu_x86_flag_t flags) {
+#if !defined(__APPLE__) && defined (__i386__) || defined (__amd64__)
+
+#ifdef HAVE_IA_SSE_RESAMPLER
+    if (flags & PA_CPU_X86_SSE3) {
+        pa_log_info("Enabling IA SSE Resampler");
+        init_table[PA_RESAMPLER_IA_SSE] = iaresamp_init;
+    } else {
+        pa_log("Illegal configuration, HAVE_IA_SSE_RESAMPLER defined but cpu doesn't support SSE3, disabling optimizations");
+        init_table[PA_RESAMPLER_IA_SSE] = NULL;
+    }
+#endif
+
+#endif /* defined (__i386__) || defined (__amd64__) */
+}
 
 const char *pa_resample_method_to_string(pa_resample_method_t m) {
 
@@ -526,7 +598,6 @@ pa_resample_method_t pa_parse_resample_method(const char *string) {
     pa_resample_method_t m;
 
     pa_assert(string);
-
     for (m = 0; m < PA_RESAMPLER_MAX; m++)
         if (!strcmp(string, resample_methods[m]))
             return m;
@@ -1246,6 +1317,96 @@ void pa_resampler_run(pa_resampler *r, const pa_memchunk *in, pa_memchunk *out) 
     } else
         pa_memchunk_reset(out);
 }
+
+#ifdef HAVE_IA_SSE_RESAMPLER
+static void iaresamp_resample(pa_resampler *r, const pa_memchunk *input,
+                              unsigned in_n_frames, pa_memchunk *output,
+                              unsigned *out_n_frames)
+{
+    float * inp, *out;
+
+    pa_assert(r);
+    pa_assert(input);
+    pa_assert(output);
+    pa_assert(out_n_frames);
+
+    // Is the float reassignment necessary?
+    inp = (float *)((uint8_t*) pa_memblock_acquire(input->memblock) + input->index);
+    out = (float *)((uint8_t*) pa_memblock_acquire(output->memblock) + output->index);
+
+    // Is dynamic assignment necessary? Can we assign this once in the init and forget?
+    // r->iaresamp_src.ctx->channels = (int32_t)(r->o_ss.channels);
+
+    //pa_log_info("Entering the IA resamp process float");
+    pa_assert_se((iaresamplib_process_sse_float(r->iaresamp_src.ctx, inp, in_n_frames, out,
+                                                out_n_frames)==0));
+
+    pa_memblock_release(input->memblock);
+    pa_memblock_release(output->memblock);
+
+}
+
+
+static void iaresamp_update_rates(pa_resampler *r)
+{
+    pa_log("IA SSE optimized resample cannot work with variable rates");
+    pa_assert(0);
+ }
+
+/*
+ *   All the settings remain the same. The resampler only resets its memory back to zero
+ */
+static void iaresamp_reset(pa_resampler *r)
+{
+    iaresamp_ctx *ctx;
+    pa_log_info("Resetting the IA optimized resampler");
+
+    pa_assert(r);
+    ctx = r->iaresamp_src.ctx;
+    iaresamplib_reset(ctx);
+}
+
+static void iaresamp_free(pa_resampler *r)
+{
+    int ret;
+    iaresamp_ctx ** p_ctx;
+
+    pa_log_info("Freeing the IA optimized resampler");
+
+    pa_assert(r);
+    p_ctx = &(r->iaresamp_src.ctx);
+    ret = iaresamplib_delete(p_ctx);
+    if(ret != 0){
+        pa_log_info("WARNING: IA optimized resampler is already freed. Attempt to free again failed");
+    }
+}
+
+
+static int iaresamp_init(pa_resampler *r)
+{
+    int new_ret_val;
+
+    pa_log_info("Initializing the IA optimized resampler");
+    pa_assert(r);
+
+    /* Assign function pointers */
+    r->impl_free         = iaresamp_free;
+    r->impl_update_rates = iaresamp_update_rates;
+    r->impl_resample     = iaresamp_resample;
+    r->impl_reset        = iaresamp_reset;
+
+    /* Allocate and initialize the resampler for a particular input and output rate */
+    if ((new_ret_val = iaresamplib_new(&(r->iaresamp_src.ctx),(int32_t)(r->o_ss.channels),
+                                       r->i_ss.rate, r->o_ss.rate) < 0))
+        return -1;
+
+    pa_log_info("Initialization done for the IA optimized resampler");
+    return 0;
+}
+
+#endif
+
+
 
 /*** libsamplerate based implementation ***/
 
