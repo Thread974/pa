@@ -305,6 +305,9 @@ int main(int argc, char *argv[]) {
     pa_bool_t all_formats = TRUE;
     pa_resample_method_t method;
     int seconds;
+#ifdef HAVE_IA_SSE_RESAMPLER
+    pa_cpu_x86_flag_t cpu_x86_flags;
+#endif
 
     static const struct option long_options[] = {
         {"help",                  0, NULL, 'h'},
@@ -339,6 +342,10 @@ int main(int argc, char *argv[]) {
 
     method = PA_RESAMPLER_AUTO;
     seconds = 60;
+
+#ifdef HAVE_IA_SSE_RESAMPLER
+    pa_cpu_init_x86(&cpu_x86_flags);
+#endif
 
     while ((c = getopt_long(argc, argv, "hv", long_options, NULL)) != -1) {
 
