@@ -155,6 +155,7 @@ struct userdata {
     pa_card *card;
     pa_sink *sink;
     pa_source *source;
+    uint32_t sink_loop;
     uint32_t source_loop;
 
     pa_thread_mq thread_mq;
@@ -255,8 +256,65 @@ static int loopback_source(struct userdata *u) {
     return 0;
 }
 
+static int loopback_sink(struct userdata *u) {
+    pa_source *defsource;
+    pa_sink *defsink;
+    const char *s;
+    pa_module *m = NULL;
+    char *args;
+
+    pa_assert(u->core);
+    pa_assert(u->sink);
+    pa_assert(u->sink_loop == PA_IDXSET_INVALID);
+
+    /* Don't want to run during startup or shutdown */
+    if (u->core->state != PA_CORE_RUNNING)
+        return -1;
+
+    /* Don't switch to any internal devices */
+    if ((s = pa_proplist_gets(u->sink->proplist, PA_PROP_DEVICE_BUS))) {
+        if (pa_streq(s, "pci"))
+            return -1;
+        else if (pa_streq(s, "isa"))
+            return -1;
+    }
+
+    /* Do not loopback default source over default sink */
+    defsink = pa_namereg_get_default_sink(u->core);
+    if (defsink == u->sink)
+        return -1;
+
+    /* Find suitable source to loopback */
+    defsource = pa_namereg_get_default_source(u->core);
+    if (!defsource)
+        defsource = defsink->monitor_source;
+
+    if (!defsource) {
+        pa_log_debug("Cannot find suitable source for loopback to %s", u->sink->name);
+        return -1;
+    }
+
+    /* Load module-loopback with default source */
+    args = pa_sprintf_malloc("source=\"%s\" sink=\"%s\" source_dont_move=\"true\"", defsource->name, u->sink->name);
+    m = pa_module_load(u->core, "module-loopback", args);
+
+    if (m) {
+        u->sink_loop = m->index;
+    } else {
+        pa_log_debug("Failed to loopback sink %s with args '%s'", u->sink->name, args);
+        pa_xfree(args);
+    }
+
+    return 0;
+}
+
 static void loopback_stop(struct userdata *u) {
     pa_assert(u->core);
+
+    if (u->sink_loop != PA_IDXSET_INVALID) {
+        pa_module_unload_by_index(u->core, u->sink_loop, TRUE);
+        u->sink_loop = PA_IDXSET_INVALID;
+    }
 
     if (u->source_loop != PA_IDXSET_INVALID) {
         pa_module_unload_by_index(u->core, u->source_loop, TRUE);
@@ -2625,6 +2683,9 @@ static int start_thread(struct userdata *u) {
         pa_sink_set_rtpoll(u->sink, u->rtpoll);
         pa_sink_put(u->sink);
 
+        if (u->auto_loopback)
+            loopback_sink(u);
+
         if (u->sink->set_volume)
             u->sink->set_volume(u->sink);
     }
@@ -2981,6 +3042,7 @@ int pa__init(pa_module* m) {
     u->stream_fd = -1;
     u->sample_spec = m->core->default_sample_spec;
     u->modargs = ma;
+    u->sink_loop = PA_IDXSET_INVALID;
     u->source_loop = PA_IDXSET_INVALID;
 
     if (pa_modargs_get_value(ma, "sco_sink", NULL) &&
