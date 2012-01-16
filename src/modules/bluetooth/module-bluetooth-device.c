@@ -308,6 +308,19 @@ static int loopback_sink(struct userdata *u) {
     return 0;
 }
 
+static void loopback_start(struct userdata *u) {
+    if (!u->auto_loopback)
+        return;
+
+    if (u->profile == PROFILE_A2DP_SOURCE || u->profile == PROFILE_HFGW) {
+        if (u->sink)
+            loopback_sink(u);
+
+        if (u->source)
+            loopback_source(u);
+    }
+}
+
 static void loopback_stop(struct userdata *u) {
     pa_assert(u->core);
 
@@ -2683,9 +2696,6 @@ static int start_thread(struct userdata *u) {
         pa_sink_set_rtpoll(u->sink, u->rtpoll);
         pa_sink_put(u->sink);
 
-        if (u->auto_loopback)
-            loopback_sink(u);
-
         if (u->sink->set_volume)
             u->sink->set_volume(u->sink);
     }
@@ -2694,9 +2704,6 @@ static int start_thread(struct userdata *u) {
         pa_source_set_asyncmsgq(u->source, u->thread_mq.inq);
         pa_source_set_rtpoll(u->source, u->rtpoll);
         pa_source_put(u->source);
-
-        if (u->auto_loopback)
-            loopback_source(u);
 
         if (u->source->set_volume)
             u->source->set_volume(u->source);
@@ -2814,6 +2821,8 @@ static int card_set_profile(pa_card *c, pa_card_profile *new_profile) {
         else
             pa_source_move_all_fail(outputs);
     }
+
+    loopback_start(u);
 
     return 0;
 }
@@ -3143,6 +3152,8 @@ int pa__init(pa_module* m) {
     if (u->sink || u->source)
         if (start_thread(u) < 0)
             goto fail;
+
+    loopback_start(u);
 
     return 0;
 
