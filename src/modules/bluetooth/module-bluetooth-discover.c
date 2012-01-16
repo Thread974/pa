@@ -49,6 +49,7 @@ static const char* const valid_modargs[] = {
     "sco_sink",
     "sco_source",
     "async",
+    "auto_loopback",
     NULL
 };
 
@@ -59,6 +60,7 @@ struct userdata {
     pa_bluetooth_discovery *discovery;
     pa_hook_slot *slot;
     pa_hashmap *hashmap;
+    pa_bool_t auto_loopback;
 };
 
 struct module_info {
@@ -113,6 +115,13 @@ static pa_hook_result_t load_module_for_device(pa_bluetooth_discovery *y, const 
             if (d->hfgw_state >= PA_BT_AUDIO_STATE_CONNECTED)
                 args = pa_sprintf_malloc("%s profile=\"hfgw\"", args);
 
+            if (u->auto_loopback) {
+                char *tmp;
+                tmp = pa_sprintf_malloc("%s auto_loopback=%s", args, u->auto_loopback ? "yes" : "no");
+                pa_xfree(args);
+                args = tmp;
+            }
+
             pa_log_debug("Loading module-bluetooth-device %s", args);
             m = pa_module_load(u->module->core, "module-bluetooth-device", args);
             pa_xfree(args);
@@ -149,6 +158,7 @@ int pa__init(pa_module* m) {
     struct userdata *u;
     pa_modargs *ma = NULL;
     pa_bool_t async = FALSE;
+    pa_bool_t auto_loopback = FALSE;
 
     pa_assert(m);
 
@@ -162,10 +172,16 @@ int pa__init(pa_module* m) {
         goto fail;
     }
 
+    if (pa_modargs_get_value_boolean(ma, "auto_loopback", &auto_loopback)) {
+        pa_log("Failed to parse auto_loopback= argument");
+        goto fail;
+    }
+
     m->userdata = u = pa_xnew0(struct userdata, 1);
     u->module = m;
     u->core = m->core;
     u->modargs = ma;
+    u->auto_loopback = auto_loopback;
     ma = NULL;
     u->hashmap = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
 

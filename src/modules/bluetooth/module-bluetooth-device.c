@@ -79,7 +79,8 @@ PA_MODULE_USAGE(
         "path=<device object path> "
         "auto_connect=<automatically connect?> "
         "sco_sink=<SCO over PCM sink name> "
-        "sco_source=<SCO over PCM source name>");
+        "sco_source=<SCO over PCM source name>"
+        "auto_loopback=<automatically loopback?>");
 
 /* TODO: not close fd when entering suspend mode in a2dp */
 
@@ -99,6 +100,7 @@ static const char* const valid_modargs[] = {
     "auto_connect",
     "sco_sink",
     "sco_source",
+    "auto_loopback",
     NULL
 };
 
@@ -146,12 +148,14 @@ struct userdata {
 
     pa_bluetooth_discovery *discovery;
     pa_bool_t auto_connect;
+    pa_bool_t auto_loopback;
 
     pa_dbus_connection *connection;
 
     pa_card *card;
     pa_sink *sink;
     pa_source *source;
+    uint32_t source_loop;
 
     pa_thread_mq thread_mq;
     pa_rtpoll *rtpoll;
@@ -202,6 +206,63 @@ enum {
 
 static int init_bt(struct userdata *u);
 static int init_profile(struct userdata *u);
+
+static int loopback_source(struct userdata *u) {
+    pa_source *defsource;
+    pa_sink *defsink;
+    const char *s;
+    pa_module *m = NULL;
+    char *args;
+
+    pa_assert(u->core);
+    pa_assert(u->source);
+    pa_assert(u->source_loop == PA_IDXSET_INVALID);
+
+    /* Don't want to run during startup or shutdown */
+    if (u->core->state != PA_CORE_RUNNING)
+        return -1;
+
+    /* Don't switch to any internal devices */
+    if ((s = pa_proplist_gets(u->source->proplist, PA_PROP_DEVICE_BUS))) {
+        if (pa_streq(s, "pci"))
+            return -1;
+        else if (pa_streq(s, "isa"))
+            return -1;
+    }
+
+    /* Do not loopback default source over default sink */
+    defsource = pa_namereg_get_default_source(u->core);
+    if (defsource == u->source)
+        return -1;
+
+    defsink = pa_namereg_get_default_sink(u->core);
+    if (!defsink) {
+        pa_log_debug("Cannot find suitable sink for loopback from %s", u->source->name);
+        return -1;
+    }
+
+    /* Load module-loopback with default sink */
+    args = pa_sprintf_malloc("source=\"%s\" sink=\"%s\" source_dont_move=\"true\"", u->source->name, defsink->name);
+    m = pa_module_load(u->core, "module-loopback", args);
+
+    if (m) {
+        u->source_loop = m->index;
+    } else {
+        pa_log_debug("Failed to loopback source %s with args '%s'", u->source->name, args);
+        pa_xfree(args);
+    }
+
+    return 0;
+}
+
+static void loopback_stop(struct userdata *u) {
+    pa_assert(u->core);
+
+    if (u->source_loop != PA_IDXSET_INVALID) {
+        pa_module_unload_by_index(u->core, u->source_loop, TRUE);
+        u->source_loop = PA_IDXSET_INVALID;
+    }
+}
 
 static int service_send(struct userdata *u, const bt_audio_msg_header_t *msg) {
     ssize_t r;
@@ -2573,6 +2634,9 @@ static int start_thread(struct userdata *u) {
         pa_source_set_rtpoll(u->source, u->rtpoll);
         pa_source_put(u->source);
 
+        if (u->auto_loopback)
+            loopback_source(u);
+
         if (u->source->set_volume)
             u->source->set_volume(u->source);
     }
@@ -2631,6 +2695,9 @@ static int card_set_profile(pa_card *c, pa_card_profile *new_profile) {
         pa_log_warn("HandsfreeGateway is not connected, refused to switch profile");
         return -PA_ERR_IO;
     }
+
+    /* We need to stop loopback before trying to move all other sink inputs/source outputs */
+    loopback_stop(u);
 
     if (u->sink) {
         inputs = pa_sink_move_all_start(u->sink, NULL);
@@ -2914,6 +2981,7 @@ int pa__init(pa_module* m) {
     u->stream_fd = -1;
     u->sample_spec = m->core->default_sample_spec;
     u->modargs = ma;
+    u->source_loop = PA_IDXSET_INVALID;
 
     if (pa_modargs_get_value(ma, "sco_sink", NULL) &&
         !(u->hsp.sco_sink = pa_namereg_get(m->core, pa_modargs_get_value(ma, "sco_sink", NULL), PA_NAMEREG_SINK))) {
@@ -2936,6 +3004,12 @@ int pa__init(pa_module* m) {
     u->auto_connect = TRUE;
     if (pa_modargs_get_value_boolean(ma, "auto_connect", &u->auto_connect)) {
         pa_log("Failed to parse auto_connect= argument");
+        goto fail;
+    }
+
+    u->auto_loopback = FALSE;
+    if (pa_modargs_get_value_boolean(ma, "auto_loopback", &u->auto_loopback)) {
+        pa_log("Failed to parse auto_loopback= argument");
         goto fail;
     }
 
@@ -3037,6 +3111,8 @@ void pa__done(pa_module *m) {
 
     if (!(u = m->userdata))
         return;
+
+    loopback_stop(u);
 
     if (u->sink && !USE_SCO_OVER_PCM(u))
         pa_sink_unlink(u->sink);
