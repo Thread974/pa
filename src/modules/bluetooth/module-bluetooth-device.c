@@ -3048,13 +3048,13 @@ static int init_bt(struct userdata *u) {
     u->stream_write_type = 0;
     u->service_write_type = 0;
     u->service_read_type = 0;
-
+/*
     if ((u->service_fd = bt_audio_service_open()) < 0) {
         pa_log_warn("Bluetooth audio service not available");
         return -1;
     }
-
-    pa_log_debug("Connected to the bluetooth audio service");
+    pa_log_debug("FAKELY Connected to the bluetooth audio service");
+*/
 
     return 0;
 }
