@@ -85,6 +85,12 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* 
             return PA_HOOK_OK;
     }
 
+    /* Restrict to A2DP sink role and HFP HF role */
+    if ((s = sink->card->active_profile->name)) {
+        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source"))
+            return PA_HOOK_OK;
+    }
+
     /* Prevent loopback default source over default sink */
     defsink = pa_namereg_get_default_sink(c);
     if (defsink == sink)
@@ -141,6 +147,12 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     /* Only consider bluetooth sink and sources */
     if ((s = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_BUS))) {
         if (!pa_streq(s, "bluetooth"))
+            return PA_HOOK_OK;
+    }
+
+    /* Restrict to A2DP sink role and HFP HF role */
+    if ((s = source->card->active_profile->name)) {
+        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source"))
             return PA_HOOK_OK;
     }
 
