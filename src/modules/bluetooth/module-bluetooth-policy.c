@@ -49,7 +49,9 @@ static const char* const valid_modargs[] = {
 struct userdata {
     pa_hook_slot
         *sink_put_slot,
-        *source_put_slot;
+        *source_put_slot,
+        *sink_unlink_slot,
+        *source_unlink_slot;
     pa_hashmap *hashmap;
 };
 
@@ -168,6 +170,50 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     return PA_HOOK_OK;
 }
 
+/* When a sink is removed, unload any existing loopback on it */
+static pa_hook_result_t sink_unlink_hook_callback(pa_core *c, pa_sink *sink, void* userdata) {
+    struct userdata *u = userdata;
+    pa_module *m = NULL;
+
+    pa_assert(c);
+    pa_assert(sink);
+
+    pa_log_debug("Sink %s being removed", sink->name);
+
+    m = pa_hashmap_get(u->hashmap, sink->name);
+    if (!m) {
+        pa_log_debug("No loopback attached to sink %s", sink->name);
+        return PA_HOOK_OK;
+    }
+
+    pa_module_unload_request(m, TRUE);
+    pa_hashmap_remove(u->hashmap, sink->name);
+
+    return PA_HOOK_OK;
+}
+
+/* When a source is removed, unload any existing loopback on it */
+static pa_hook_result_t source_unlink_hook_callback(pa_core *c, pa_source *source, void* userdata) {
+    struct userdata *u = userdata;
+    pa_module *m = NULL;
+
+    pa_assert(c);
+    pa_assert(source);
+
+    pa_log_debug("Source %s being removed", source->name);
+
+    m = pa_hashmap_get(u->hashmap, source->name);
+    if (!m) {
+        pa_log_debug("No loopback attached to source %s", source->name);
+        return PA_HOOK_OK;
+    }
+
+    pa_module_unload_request(m, TRUE);
+    pa_hashmap_remove(u->hashmap, source->name);
+
+    return PA_HOOK_OK;
+}
+
 int pa__init(pa_module*m) {
     pa_modargs *ma;
     struct userdata *u;
@@ -184,6 +230,9 @@ int pa__init(pa_module*m) {
     /* A little bit later than module-rescue-streams... */
     u->sink_put_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_PUT], PA_HOOK_LATE+30, (pa_hook_cb_t) sink_put_hook_callback, u);
     u->source_put_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_PUT], PA_HOOK_LATE+20, (pa_hook_cb_t) source_put_hook_callback, u);
+    u->sink_unlink_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_UNLINK], PA_HOOK_LATE+30, (pa_hook_cb_t) sink_unlink_hook_callback, u);
+    u->source_unlink_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_UNLINK], PA_HOOK_LATE+20, (pa_hook_cb_t) source_unlink_hook_callback, u);
+
     u->hashmap = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
     pa_modargs_free(ma);
     return 0;
@@ -201,6 +250,10 @@ void pa__done(pa_module*m) {
         pa_hook_slot_free(u->sink_put_slot);
     if (u->source_put_slot)
         pa_hook_slot_free(u->source_put_slot);
+    if (u->sink_unlink_slot)
+        pa_hook_slot_free(u->sink_unlink_slot);
+    if (u->source_unlink_slot)
+        pa_hook_slot_free(u->source_unlink_slot);
 
     if (u->hashmap) {
         struct pa_module *mi;
