@@ -86,15 +86,6 @@ static pa_hook_result_t load_module_for_device(pa_bluetooth_discovery *y, const 
             /* Oh, awesome, a new device has shown up and been connected! */
 
             args = pa_sprintf_malloc("address=\"%s\" path=\"%s\"", d->address, d->path);
-#if 0
-            /* This is in case we have to use hsp immediately, without waiting for .Audio.State = Connected */
-            if (d->headset_state >= PA_BT_AUDIO_STATE_CONNECTED && somecondition) {
-                char *tmp;
-                tmp = pa_sprintf_malloc("%s profile=\"hsp\"", args);
-                pa_xfree(args);
-                args = tmp;
-            }
-#endif
 
             if (pa_modargs_get_value(u->modargs, "sco_sink", NULL) &&
                 pa_modargs_get_value(u->modargs, "sco_source", NULL)) {
@@ -106,12 +97,6 @@ static pa_hook_result_t load_module_for_device(pa_bluetooth_discovery *y, const 
                 pa_xfree(args);
                 args = tmp;
             }
-
-            if (d->audio_source_state >= PA_BT_AUDIO_STATE_CONNECTED)
-                args = pa_sprintf_malloc("%s profile=\"a2dp_source\" auto_connect=no", args);
-
-            if (d->hfgw_state >= PA_BT_AUDIO_STATE_CONNECTED)
-                args = pa_sprintf_malloc("%s profile=\"hfgw\"", args);
 
             pa_log_debug("Loading module-bluetooth-device %s", args);
             m = pa_module_load(u->module->core, "module-bluetooth-device", args);
