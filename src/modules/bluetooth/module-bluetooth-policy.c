@@ -33,6 +33,7 @@
 #include <pulsecore/core-util.h>
 
 #include "module-bluetooth-policy-symdef.h"
+#include "bluetooth-util.h"
 
 PA_MODULE_AUTHOR("Frédéric Dalleau");
 PA_MODULE_DESCRIPTION("When a sink/source is added, load module-loopback");
@@ -44,12 +45,15 @@ static const char* const valid_modargs[] = {
 };
 
 struct userdata {
+    pa_core *core;
     pa_hook_slot
         *sink_put_slot,
         *source_put_slot,
         *sink_unlink_slot,
-        *source_unlink_slot;
+        *source_unlink_slot,
+        *discovery_slot;
     pa_hashmap *hashmap;
+    pa_bluetooth_discovery *discovery;
 };
 
 /* When a sink is created, loopback default source (microphone) on it */
@@ -231,22 +235,71 @@ static pa_hook_result_t source_unlink_hook_callback(pa_core *c, pa_source *sourc
     return PA_HOOK_OK;
 }
 
+static pa_hook_result_t update_device_profile(pa_bluetooth_discovery *y, const pa_bluetooth_device *d, struct userdata *u) {
+    char *name, *s;
+    const char *profile;
+    pa_card *c;
+
+    pa_assert(u);
+    pa_assert(d);
+
+    pa_log_debug("%s: audio %d, hfp %d, hfgw %d, a2dp %d, a2dp_source %d", d->name, d->audio_state, d->headset_state, d->hfgw_state, d->audio_sink_state, d->audio_source_state);
+
+    name = pa_sprintf_malloc("bluez_card.%s", d->address);
+
+    for (s = name; *s; s++)
+        if (*s == ':')
+            *s = '_';
+
+    c = pa_namereg_get(u->core, name, PA_NAMEREG_CARD);
+    pa_xfree(name);
+
+    if (!c)
+        return PA_HOOK_OK;
+
+    if (d->hfgw_state > PA_BT_AUDIO_STATE_CONNECTED)
+        profile = "hfgw";
+    else if (d->headset_state > PA_BT_AUDIO_STATE_CONNECTED)
+        profile = "hfp";
+    else if (d->audio_source_state > PA_BT_AUDIO_STATE_CONNECTED)
+        profile = "a2dp_source";
+    else if (d->audio_sink_state > PA_BT_AUDIO_STATE_CONNECTED)
+        profile = "a2dp";
+    else
+        profile = "off";
+
+    if (pa_card_set_profile(c, profile, FALSE))
+        pa_log_debug("Failed to set card %s to profile %s", c->name, profile);
+
+    return PA_HOOK_OK;
+}
+
 int pa__init(pa_module*m) {
     struct userdata *u;
 
     pa_assert(m);
 
     m->userdata = u = pa_xnew0(struct userdata, 1);
+    u->core = m->core;
+
+    if (!(u->discovery = pa_bluetooth_discovery_get(m->core)))
+        goto fail;
 
     /* A little bit later than module-rescue-streams... */
     u->sink_put_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_PUT], PA_HOOK_LATE+30, (pa_hook_cb_t) sink_put_hook_callback, u);
     u->source_put_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_PUT], PA_HOOK_LATE+20, (pa_hook_cb_t) source_put_hook_callback, u);
     u->sink_unlink_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_UNLINK], PA_HOOK_LATE+30, (pa_hook_cb_t) sink_unlink_hook_callback, u);
     u->source_unlink_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_UNLINK], PA_HOOK_LATE+20, (pa_hook_cb_t) source_unlink_hook_callback, u);
+    u->discovery_slot = pa_hook_connect(pa_bluetooth_discovery_hook(u->discovery), PA_HOOK_NORMAL, (pa_hook_cb_t) update_device_profile, u);
 
     u->hashmap = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
 
     return 0;
+
+fail:
+    pa__done(m);
+
+    return -1;
 }
 
 void pa__done(pa_module*m) {
@@ -257,6 +310,8 @@ void pa__done(pa_module*m) {
     if (!(u = m->userdata))
         return;
 
+    if (u->discovery_slot)
+        pa_hook_slot_free(u->discovery_slot);
     if (u->sink_put_slot)
         pa_hook_slot_free(u->sink_put_slot);
     if (u->source_put_slot)
@@ -275,6 +330,9 @@ void pa__done(pa_module*m) {
 
         pa_hashmap_free(u->hashmap, NULL, NULL);
     }
+
+    if (u->discovery)
+        pa_bluetooth_discovery_unref(u->discovery);
 
     pa_xfree(u);
 }
