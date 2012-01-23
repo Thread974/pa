@@ -91,9 +91,11 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* 
     }
 
     /* Restrict to A2DP sink role and HFP HF role */
-    if ((s = sink->card->active_profile->name)) {
-        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source"))
+    if ((s = pa_proplist_gets(sink->proplist, "bluetooth.protocol"))) {
+        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source")) {
+            pa_log_debug("Profile %s cannot be selected for loopback", s);
             return PA_HOOK_OK;
+        }
     }
 
     /* Prevent loopback default source over default sink */
@@ -156,9 +158,11 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     }
 
     /* Restrict to A2DP sink role and HFP HF role */
-    if ((s = source->card->active_profile->name)) {
-        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source"))
+    if ((s = pa_proplist_gets(source->proplist, "bluetooth.protocol"))) {
+        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source")) {
+            pa_log_debug("Profile %s cannot be selected for loopback", s);
             return PA_HOOK_OK;
+        }
     }
 
     /* Prevent loopback default source over default sink */
