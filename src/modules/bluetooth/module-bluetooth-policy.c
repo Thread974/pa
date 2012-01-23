@@ -267,17 +267,19 @@ static pa_hook_result_t update_device_profile(pa_bluetooth_discovery *y, const p
 
     if (d->hfgw_state > PA_BT_AUDIO_STATE_CONNECTED)
         profile = "hfgw";
-    else if (d->audio_source_state > PA_BT_AUDIO_STATE_CONNECTED)
-        profile = "a2dp_source";
     else if (d->headset_state > PA_BT_AUDIO_STATE_CONNECTED)
         profile = "hfp";
+    else if (d->audio_source_state > PA_BT_AUDIO_STATE_CONNECTED)
+        profile = "a2dp_source";
     else if (d->audio_sink_state > PA_BT_AUDIO_STATE_CONNECTED)
         profile = "a2dp";
     else
         profile = "off";
 
-    if (!pa_card_set_profile(c, profile, FALSE))
+    pa_log_debug("Set card %s to profile %s", c->name, profile);
+    if (pa_card_set_profile(c, profile, FALSE))
         pa_log("Failed to set card %s to profile %s", c->name, profile);
+
 
     return PA_HOOK_OK;
 }
