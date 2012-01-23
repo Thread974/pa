@@ -100,8 +100,10 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* 
 
     /* Prevent loopback default source over default sink */
     defsink = pa_namereg_get_default_sink(c);
-    if (defsink == sink)
+    if (defsink == sink) {
+        pa_log_debug("Refusing to loopback to default sink %s", sink->name);
         return PA_HOOK_OK;
+    }
 
     /* Find suitable source to loopback from */
     defsource = pa_namereg_get_default_source(c);
@@ -167,8 +169,10 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
 
     /* Prevent loopback default source over default sink */
     defsource = pa_namereg_get_default_source(c);
-    if (defsource == source)
+    if (defsource == source) {
+        pa_log_debug("Refusing to loopback from default source %s", source->name);
         return PA_HOOK_OK;
+    }
 
     /* Find suitable sink to loopback to */
     defsink = pa_namereg_get_default_sink(c);
