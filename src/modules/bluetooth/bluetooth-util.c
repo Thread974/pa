@@ -657,22 +657,35 @@ static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const
 
 static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
     DBusMessage *m;
-    a2dp_mpeg_t mpeg_caps;
+    union {
+        a2dp_mpeg_t mpeg_caps;
+        unsigned char caps[4];
+    } caps;
+    int i = 0;
+
     pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.bluez.Adapter", "ListDevices"));
     send_and_add_to_pending(y, m, list_devices_reply, NULL);
 
     register_endpoint(y, path, HFP_AG_ENDPOINT, HFP_AG_UUID, NULL, 0);
     register_endpoint(y, path, HFP_HS_ENDPOINT, HFP_HS_UUID, NULL, 0);
-    register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, NULL, 0);
+//    register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, NULL, 0);
 
-    mpeg_caps.channel_mode = 0xF;
-    mpeg_caps.crc = 1;
-    mpeg_caps.layer = 0x01; /* mp3,mp2,mp1 */
-    mpeg_caps.frequency = 0x07;
-    mpeg_caps.mpf = 0;
-    mpeg_caps.rfa = 0;
-    mpeg_caps.bitrate = 0xFEFF;
-    register_endpoint(y, path, A2DP_SINK_ENDPOINT"MP3", A2DP_SINK_UUID, &mpeg_caps, sizeof(mpeg_caps));
+    caps.mpeg_caps.channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+    caps.mpeg_caps.crc = 0;
+    caps.mpeg_caps.layer = BT_MPEG_LAYER_3; /* mp3,mp2,mp1 */
+    caps.mpeg_caps.frequency = BT_SBC_SAMPLING_FREQ_44100;
+    caps.mpeg_caps.mpf = 0;
+    caps.mpeg_caps.rfa = 0;
+    caps.mpeg_caps.bitrate = (1 << 11);
+    register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, &caps, sizeof(caps));
+#if 0
+    caps.byte[i++] = 0x3F;
+    caps.byte[i++] = 0x3F;
+    caps.byte[i++] = 0xFF;
+    caps.byte[i++] = 0xFE;
+#endif
+
+//    register_endpoint(y, path, A2DP_SINK_ENDPOINT"MP3", A2DP_SINK_UUID, &caps, sizeof(caps));
     //register_endpoint(y, path, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID, NULL, 0);
 }
 
@@ -1278,12 +1291,33 @@ static uint8_t a2dp_default_bitpool(uint8_t freq, uint8_t mode) {
 
 static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage *m, void *userdata) {
     pa_bluetooth_discovery *y = userdata;
+    DBusMessage *r;
+
+#if 1
+    union {
+        a2dp_mpeg_t mpeg_caps;
+        unsigned char caps[4];
+    } caps;
+    void *pconf = &caps;
+
+    caps.mpeg_caps.channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+    caps.mpeg_caps.crc = 0;
+    caps.mpeg_caps.layer = BT_MPEG_LAYER_3; /* mp3,mp2,mp1 */
+    caps.mpeg_caps.frequency = BT_SBC_SAMPLING_FREQ_44100;
+    caps.mpeg_caps.mpf = 0;
+    caps.mpeg_caps.rfa = 0;
+    caps.mpeg_caps.bitrate = (1 << 11);
+
+    pa_assert_se(r = dbus_message_new_method_return(m));
+
+    pa_assert_se(dbus_message_append_args(r,
+                                     DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE, (void*)&pconf, sizeof(caps),
+                                     DBUS_TYPE_INVALID));
+#else
     a2dp_sbc_t *cap, config;
     uint8_t *pconf = (uint8_t *) &config;
     int i, size;
-    DBusMessage *r;
     DBusError e;
-
     static const struct {
         uint32_t rate;
         uint8_t cap;
@@ -1382,7 +1416,6 @@ static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage
 
     config.min_bitpool = (uint8_t) PA_MAX(MIN_BITPOOL, cap->min_bitpool);
     config.max_bitpool = (uint8_t) PA_MIN(a2dp_default_bitpool(config.frequency, config.channel_mode), cap->max_bitpool);
-
 done:
     pa_assert_se(r = dbus_message_new_method_return(m));
 
@@ -1390,6 +1423,7 @@ done:
                                      r,
                                      DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE, &pconf, size,
                                      DBUS_TYPE_INVALID));
+#endif
 
     return r;
 
