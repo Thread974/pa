@@ -274,9 +274,9 @@ static pa_hook_result_t update_device_profile(pa_bluetooth_discovery *y, const p
     else if (d->audio_sink_state > PA_BT_AUDIO_STATE_CONNECTED)
         profile = "a2dp";
     else
-        profile = "off";
+        profile = NULL;
 
-    if (pa_card_set_profile(c, profile, FALSE))
+    if (profile && pa_card_set_profile(c, profile, FALSE))
         pa_log_debug("Failed to set card %s to profile %s", c->name, profile);
 
     return PA_HOOK_OK;
