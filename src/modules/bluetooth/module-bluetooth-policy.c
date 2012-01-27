@@ -85,17 +85,21 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* 
     }
 
     /* Only consider bluetooth sink and sources */
-    if ((s = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_BUS))) {
-        if (!pa_streq(s, "bluetooth"))
-            return PA_HOOK_OK;
-    }
+    s = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_BUS);
+    if (!s)
+        return PA_HOOK_OK;
+
+    if (!pa_streq(s, "bluetooth"))
+        return PA_HOOK_OK;
 
     /* Restrict to A2DP sink role and HFP HF role */
-    if ((s = pa_proplist_gets(sink->proplist, "bluetooth.protocol"))) {
-        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source")) {
-            pa_log_debug("Profile %s cannot be selected for loopback", s);
-            return PA_HOOK_OK;
-        }
+    s = pa_proplist_gets(sink->proplist, "bluetooth.protocol");
+    if (!s)
+        return PA_HOOK_OK;
+
+    if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source")) {
+        pa_log_debug("Profile %s cannot be selected for loopback", s);
+        return PA_HOOK_OK;
     }
 
     /* Prevent loopback default source over default sink */
@@ -154,17 +158,21 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     }
 
     /* Only consider bluetooth sink and sources */
-    if ((s = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_BUS))) {
-        if (!pa_streq(s, "bluetooth"))
-            return PA_HOOK_OK;
-    }
+    s = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_BUS);
+    if (!s)
+        return PA_HOOK_OK;
+
+    if (!pa_streq(s, "bluetooth"))
+        return PA_HOOK_OK;
 
     /* Restrict to A2DP sink role and HFP HF role */
-    if ((s = pa_proplist_gets(source->proplist, "bluetooth.protocol"))) {
-        if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source")) {
-            pa_log_debug("Profile %s cannot be selected for loopback", s);
-            return PA_HOOK_OK;
-        }
+    s = pa_proplist_gets(source->proplist, "bluetooth.protocol");
+    if (!s)
+        return PA_HOOK_OK;
+
+    if (!pa_streq(s, "hfgw") && !pa_streq(s, "a2dp_source")) {
+        pa_log_debug("Profile %s cannot be selected for loopback", s);
+        return PA_HOOK_OK;
     }
 
     /* Prevent loopback default source over default sink */
