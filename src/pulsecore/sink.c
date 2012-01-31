@@ -3346,7 +3346,7 @@ pa_bool_t pa_device_init_description(pa_proplist *p) {
 
     if ((s = pa_proplist_gets(p, PA_PROP_DEVICE_FORM_FACTOR)))
         if (pa_streq(s, "internal"))
-            d = _("Internal Audio");
+            d = _("Built-in Audio");
 
     if (!d)
         if ((s = pa_proplist_gets(p, PA_PROP_DEVICE_CLASS)))
@@ -3362,7 +3362,7 @@ pa_bool_t pa_device_init_description(pa_proplist *p) {
     k = pa_proplist_gets(p, PA_PROP_DEVICE_PROFILE_DESCRIPTION);
 
     if (d && k)
-        pa_proplist_setf(p, PA_PROP_DEVICE_DESCRIPTION, _("%s %s"), d, k);
+        pa_proplist_setf(p, PA_PROP_DEVICE_DESCRIPTION, "%s %s", d, k);
     else if (d)
         pa_proplist_sets(p, PA_PROP_DEVICE_DESCRIPTION, d);
 
