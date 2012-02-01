@@ -1014,8 +1014,9 @@ static int setup_stream(struct userdata *u) {
         pa_log_warn("Failed to enable SO_TIMESTAMP: %s", pa_cstrerror(errno));
 
     pa_log_debug("Stream properly set up, we're ready to roll!");
+    u->a2dp.mode == A2DP_MODE_MPEG;
 
-    if (u->profile == PROFILE_A2DP)
+    if (u->profile == PROFILE_A2DP && u->a2dp.mode == A2DP_MODE_SBC)
         a2dp_set_bitpool(u, u->a2dp.max_bitpool);
 
     u->rtpoll_item = pa_rtpoll_item_new(u->rtpoll, PA_RTPOLL_NEVER, 1);
@@ -1207,6 +1208,8 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
             pa_sink_input *i = PA_SINK_INPUT(data);
             a2dp_mode_t mode;
 
+            pa_log_debug("PA_SINK_MESSAGE_ADD_INPUT");
+
             if (u->profile == PROFILE_A2DP) {
                 switch(i->format->encoding) {
                     case PA_ENCODING_PCM:
@@ -1223,22 +1226,12 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
                 }
 
                 if (PA_UNLIKELY(mode != u->a2dp.mode)) {
-                    /* FIXME: Just suspend should suffice? This resets the smoother */
-                    if (stop_stream_fd(u) < 0 || close_stream(u) < 0) {
-                        failed = TRUE;
-                        break;
-                    }
 
-                    u->a2dp.mode = mode;
-                    if (set_conf(u) < 0) {
-                        failed = TRUE;
-                        break;
-                    }
+    //                bt_transport_release(u);
 
-                    if (start_stream_fd(u) < 0) {
-                        failed = TRUE;
-                        break;
-                    }
+  //                  bt_transport_config_a2dp_mpeg(u);
+
+//                    bt_transport_acquire(u);
                 }
             }
 
@@ -1755,8 +1748,10 @@ static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len
     pa_assert(sample_len != NULL);
 
     tmp = uextract(hi, 21, 11);
+//    pa_log("reading sync %x", tmp);
     if (tmp == 0x7ff) {			/* valid sync word */
         tmp = uextract(hi, 19, 2);
+//        pa_log("reading version %x", tmp);
         if (tmp != 1) {			/* valid IDex */
 
             idex = tmp >> 1;
@@ -1764,13 +1759,16 @@ static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len
 
                 id = tmp & 1;
                 tmp = uextract(hi, 17, 2);
+//                pa_log("reading layer %x", tmp);
                 if (tmp == 0x1) {	/* layer 3 */
 
                     bitrate = uextract(hi, 12, 4);
+//                    pa_log("reading bitrate %x", bitrate);
                     if ((bitrate != 0) &&	/* not free format */
                         (bitrate != 0xf)) {	/* not reserved */
 
                         freq = uextract(hi, 10, 2);
+//                        pa_log("reading frequency %x", freq);
                         if (freq != 3) {	/* valid sampling frequency */
 
                             tmp = uextract(hi, 9, 1);
@@ -1789,12 +1787,22 @@ static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len
                                 *len = bits;
                                 *sample_len = mpeg_frame_length[id][1];
                                 return TRUE;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+                            } else
+                                pa_log("invalid bits %d", bits);
+
+                        } else
+                            pa_log("invalid freq %x", freq);
+
+                    } else
+                        pa_log("invalid bitrate %x", bitrate);
+                } else
+                    pa_log("invalid layer %x", tmp);
+            } else
+                pa_log("invalid version 2 %x", tmp);
+        } else
+            pa_log("invalid version 1 %x", tmp);
+
+
     } else {
         if (hi!=0)
             pa_log("no sync word found %x", hi);
@@ -1921,6 +1929,7 @@ static int a2dp_passthrough_process_render(struct userdata *u) {
             uint32_t frame_length2 = 0;
             uint32_t sample_len = 0;
 
+            /* p[5] */
             /* valid MPEG payload, now extract frame length */
 
             frame_length = p[7]<<8 | p[6]; /* in bits */
@@ -1931,9 +1940,10 @@ static int a2dp_passthrough_process_render(struct userdata *u) {
                     /* now we have verified that the IEC frame and MPEG frame are in
                        agreement, we should be good to go */
                     confirmed_sync = TRUE;
-                }
+                } else
+                    pa_log("IEC958 sync found but MP3 do not confirm length (frame_length %d, mp3 frame_length %d)", frame_length, frame_length2);
             } else {
-                pa_log("IEC958 sync found but no MP3 sync found");
+                pa_log("IEC958 sync found but invalid MP3 hdr found");
             }
         }
         pa_memblock_release(u->write_memchunk.memblock);
@@ -2313,7 +2323,7 @@ static void thread_func(void *userdata) {
                                 pa_memblock_unref(tmp.memblock);
                                 u->write_index += skip_bytes;
 
-                                if (u->profile == PROFILE_A2DP)
+                                if (u->profile == PROFILE_A2DP && u->a2dp.mode == A2DP_MODE_SBC)
                                     a2dp_reduce_bitpool(u);
                             }
                         }
@@ -3028,17 +3038,19 @@ static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
     pa_assert(t);
 
     config = (a2dp_mpeg_t *) t->config;
-
-//    pa_log_info("MPEG parameters:\n\tallocation=%u\n\tsubbands=%u\n\tblocks=%u\n\tbitpool=%u\n",
-//                a2dp->sbc.allocation, a2dp->sbc.subbands, a2dp->sbc.blocks, a2dp->sbc.bitpool);
+    u->a2dp.mode = A2DP_MODE_MPEG;
+    u->block_size = 1152*4; /* this is the size of an IEC61937 frame for MPEG layer 3 */
+    u->sample_spec.format = PA_SAMPLE_S16LE;
 
     return 0;
 }
 
 static int bt_transport_config_a2dp(struct userdata *u) {
 
-    return bt_transport_config_a2dp_mpeg(u);
+ //   if (u->a2dp.mode == A2DP_MODE_SBC)
+//        return bt_transport_config_a2dp_sbc(u);
 
+    return bt_transport_config_a2dp_mpeg(u);
 }
 
 static int bt_transport_config(struct userdata *u) {
