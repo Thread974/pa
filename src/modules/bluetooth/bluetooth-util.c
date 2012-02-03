@@ -715,9 +715,9 @@ static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
     static const a2dp_mpeg_t source_caps = {
         .channel_mode = BT_A2DP_CHANNEL_MODE_MONO | BT_A2DP_CHANNEL_MODE_STEREO |
                         BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL | BT_A2DP_CHANNEL_MODE_JOINT_STEREO,
-        .layer = BT_MPEG_LAYER_1 | BT_MPEG_LAYER_2 | BT_MPEG_LAYER_3,
+        .layer = 1, /* BT_MPEG_LAYER_3 */
         .crc = 0,
-        .frequency = MPEG_SAMPLING_FREQ_44100|MPEG_SAMPLING_FREQ_48000,
+        .frequency = (1 << 1) | 1, /* 44100 | 48000 Hz */
         .rfa = 0,
         .mpf = 0,
         .bitrate = 0xff,
@@ -1290,15 +1290,15 @@ static int endpoint_mpeg_select_configuration(pa_bluetooth_discovery *y, uint8_t
 
     config->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
     config->crc = 0;
-    config->layer = BT_MPEG_LAYER_3;
+    config->layer = 1; /* BT_MPEG_LAYER_3 */
     config->mpf = 0;
     config->rfa = 0;
     config->bitrate = (1 << 11); /* vbr? */
 
     if (y->core->default_sample_spec.rate == 48000)
-        config->frequency = BT_MPEG_SAMPLING_FREQ_48000;
+        config->frequency = 1; /* 48000 */
     else
-        config->frequency = BT_MPEG_SAMPLING_FREQ_44100;
+        config->frequency = 2; /* 44100 */
 
     if (y->core->default_sample_spec.channels <= 1) {
         if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO)
