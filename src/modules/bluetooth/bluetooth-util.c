@@ -1300,14 +1300,51 @@ static uint8_t a2dp_default_bitpool(uint8_t freq, uint8_t mode) {
     }
 }
 
-static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage *m, void *userdata) {
-    pa_bluetooth_discovery *y = userdata;
-    a2dp_sbc_t *cap, config;
-    uint8_t *pconf = (uint8_t *) &config;
-    int i, size;
-    DBusMessage *r;
-    DBusError e;
+static int endpoint_mpeg_select_configuration(pa_bluetooth_discovery *y, uint8_t *capbuf, uint8_t *buf, unsigned int size) {
+    a2dp_mpeg_t *config = (a2dp_mpeg_t *)buf;
+    a2dp_mpeg_t *cap = (a2dp_mpeg_t *)capbuf;
 
+    pa_assert(size >= sizeof(a2dp_mpeg_t));
+
+    config->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+    config->crc = 0;
+    config->layer = BT_MPEG_LAYER_3;
+    config->mpf = 0;
+    config->rfa = 0;
+    config->bitrate = (1 << 11); /* vbr? */
+
+    if (y->core->default_sample_spec.rate == 48000)
+        config->frequency = BT_MPEG_SAMPLING_FREQ_48000;
+    else
+        config->frequency = BT_MPEG_SAMPLING_FREQ_44100;
+
+    if (y->core->default_sample_spec.channels <= 1) {
+        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+    }
+
+    if (y->core->default_sample_spec.channels >= 2) {
+        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_JOINT_STEREO)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_JOINT_STEREO;
+        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_STEREO)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL;
+        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+        } else {
+            pa_log("No supported channel modes");
+            return -1;
+        }
+    }
+
+    return sizeof(a2dp_mpeg_t);
+}
+
+static int endpoint_sbc_select_configuration(pa_bluetooth_discovery *y, uint8_t *capbuf, uint8_t *buf, unsigned int size) {
+    int i;
+    a2dp_sbc_t *cap = (a2dp_sbc_t *)capbuf;
+    a2dp_sbc_t *config = (a2dp_sbc_t *)buf;
     static const struct {
         uint32_t rate;
         uint8_t cap;
@@ -1317,6 +1354,95 @@ static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage
         { 44100U, BT_SBC_SAMPLING_FREQ_44100 },
         { 48000U, BT_SBC_SAMPLING_FREQ_48000 }
     };
+
+    pa_assert(size >= sizeof(a2dp_sbc_t));
+
+    memset(config, 0, size);
+
+    /* Find the lowest freq that is at least as high as the requested
+     * sampling rate */
+    for (i = 0; (unsigned) i < PA_ELEMENTSOF(freq_table); i++)
+        if (freq_table[i].rate >= y->core->default_sample_spec.rate && (cap->frequency & freq_table[i].cap)) {
+            config->frequency = freq_table[i].cap;
+            break;
+        }
+
+    if ((unsigned) i == PA_ELEMENTSOF(freq_table)) {
+        for (--i; i >= 0; i--) {
+            if (cap->frequency & freq_table[i].cap) {
+                config->frequency = freq_table[i].cap;
+                break;
+            }
+        }
+
+        if (i < 0) {
+            pa_log("Not suitable sample rate");
+            return -1;
+        }
+    }
+
+    pa_assert((unsigned) i < PA_ELEMENTSOF(freq_table));
+
+    if (y->core->default_sample_spec.channels <= 1) {
+        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+    }
+
+    if (y->core->default_sample_spec.channels >= 2) {
+        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_JOINT_STEREO)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_JOINT_STEREO;
+        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_STEREO)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
+        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL)
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL;
+        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
+            config->channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
+        } else {
+            pa_log("No supported channel modes");
+            return -1;
+        }
+    }
+
+    if (cap->block_length & BT_A2DP_BLOCK_LENGTH_16)
+        config->block_length = BT_A2DP_BLOCK_LENGTH_16;
+    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_12)
+        config->block_length = BT_A2DP_BLOCK_LENGTH_12;
+    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_8)
+        config->block_length = BT_A2DP_BLOCK_LENGTH_8;
+    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_4)
+        config->block_length = BT_A2DP_BLOCK_LENGTH_4;
+    else {
+        pa_log_error("No supported block lengths");
+            return -1;
+    }
+
+    if (cap->subbands & BT_A2DP_SUBBANDS_8)
+        config->subbands = BT_A2DP_SUBBANDS_8;
+    else if (cap->subbands & BT_A2DP_SUBBANDS_4)
+        config->subbands = BT_A2DP_SUBBANDS_4;
+    else {
+        pa_log_error("No supported subbands");
+            return -1;
+    }
+
+    if (cap->allocation_method & BT_A2DP_ALLOCATION_LOUDNESS)
+        config->allocation_method = BT_A2DP_ALLOCATION_LOUDNESS;
+    else if (cap->allocation_method & BT_A2DP_ALLOCATION_SNR)
+        config->allocation_method = BT_A2DP_ALLOCATION_SNR;
+
+    config->min_bitpool = (uint8_t) PA_MAX(MIN_BITPOOL, cap->min_bitpool);
+    config->max_bitpool = (uint8_t) PA_MIN(a2dp_default_bitpool(config->frequency, config->channel_mode), cap->max_bitpool);
+
+    return sizeof(a2dp_sbc_t);
+}
+
+static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage *m, void *userdata) {
+    pa_bluetooth_discovery *y = userdata;
+    DBusMessage *r;
+    uint8_t *cap, config[4];
+    uint8_t *pconf = config;
+    int size;
+    DBusError e;
 
     dbus_error_init(&e);
 
@@ -1329,89 +1455,18 @@ static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage
     if (dbus_message_has_path(m, HFP_AG_ENDPOINT) || dbus_message_has_path(m, HFP_HS_ENDPOINT))
         goto done;
 
-    pa_assert(size == sizeof(config));
+    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG))
+        size = endpoint_mpeg_select_configuration(y, cap, pconf, sizeof(config));
+    else
+        size = endpoint_sbc_select_configuration(y, cap, pconf, sizeof(config));
 
-    memset(&config, 0, sizeof(config));
-
-    /* Find the lowest freq that is at least as high as the requested
-     * sampling rate */
-    for (i = 0; (unsigned) i < PA_ELEMENTSOF(freq_table); i++)
-        if (freq_table[i].rate >= y->core->default_sample_spec.rate && (cap->frequency & freq_table[i].cap)) {
-            config.frequency = freq_table[i].cap;
-            break;
-        }
-
-    if ((unsigned) i == PA_ELEMENTSOF(freq_table)) {
-        for (--i; i >= 0; i--) {
-            if (cap->frequency & freq_table[i].cap) {
-                config.frequency = freq_table[i].cap;
-                break;
-            }
-        }
-
-        if (i < 0) {
-            pa_log("Not suitable sample rate");
-            goto fail;
-        }
-    }
-
-    pa_assert((unsigned) i < PA_ELEMENTSOF(freq_table));
-
-    if (y->core->default_sample_spec.channels <= 1) {
-        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO)
-            config.channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
-    }
-
-    if (y->core->default_sample_spec.channels >= 2) {
-        if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_JOINT_STEREO)
-            config.channel_mode = BT_A2DP_CHANNEL_MODE_JOINT_STEREO;
-        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_STEREO)
-            config.channel_mode = BT_A2DP_CHANNEL_MODE_STEREO;
-        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL)
-            config.channel_mode = BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL;
-        else if (cap->channel_mode & BT_A2DP_CHANNEL_MODE_MONO) {
-            config.channel_mode = BT_A2DP_CHANNEL_MODE_MONO;
-        } else {
-            pa_log("No supported channel modes");
-            goto fail;
-        }
-    }
-
-    if (cap->block_length & BT_A2DP_BLOCK_LENGTH_16)
-        config.block_length = BT_A2DP_BLOCK_LENGTH_16;
-    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_12)
-        config.block_length = BT_A2DP_BLOCK_LENGTH_12;
-    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_8)
-        config.block_length = BT_A2DP_BLOCK_LENGTH_8;
-    else if (cap->block_length & BT_A2DP_BLOCK_LENGTH_4)
-        config.block_length = BT_A2DP_BLOCK_LENGTH_4;
-    else {
-        pa_log_error("No supported block lengths");
+    if(size < 0)
         goto fail;
-    }
-
-    if (cap->subbands & BT_A2DP_SUBBANDS_8)
-        config.subbands = BT_A2DP_SUBBANDS_8;
-    else if (cap->subbands & BT_A2DP_SUBBANDS_4)
-        config.subbands = BT_A2DP_SUBBANDS_4;
-    else {
-        pa_log_error("No supported subbands");
-        goto fail;
-    }
-
-    if (cap->allocation_method & BT_A2DP_ALLOCATION_LOUDNESS)
-        config.allocation_method = BT_A2DP_ALLOCATION_LOUDNESS;
-    else if (cap->allocation_method & BT_A2DP_ALLOCATION_SNR)
-        config.allocation_method = BT_A2DP_ALLOCATION_SNR;
-
-    config.min_bitpool = (uint8_t) PA_MAX(MIN_BITPOOL, cap->min_bitpool);
-    config.max_bitpool = (uint8_t) PA_MIN(a2dp_default_bitpool(config.frequency, config.channel_mode), cap->max_bitpool);
 
 done:
     pa_assert_se(r = dbus_message_new_method_return(m));
 
-    pa_assert_se(dbus_message_append_args(
-                                     r,
+    pa_assert_se(dbus_message_append_args(r,
                                      DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE, &pconf, size,
                                      DBUS_TYPE_INVALID));
 
