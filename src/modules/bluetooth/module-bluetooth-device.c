@@ -2082,7 +2082,7 @@ static int add_source(struct userdata *u) {
     return 0;
 }
 
-static int bt_transport_config_a2dp(struct userdata *u) {
+static int bt_transport_config_a2dp_sbc(struct userdata *u) {
     const pa_bluetooth_transport *t;
     struct a2dp_info *a2dp = &u->a2dp;
     a2dp_sbc_t *config;
@@ -2201,6 +2201,23 @@ static int bt_transport_config_a2dp(struct userdata *u) {
                 a2dp->sbc.allocation, a2dp->sbc.subbands, a2dp->sbc.blocks, a2dp->sbc.bitpool);
 
     return 0;
+}
+
+static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
+    const pa_bluetooth_transport *t;
+    struct a2dp_info *a2dp = &u->a2dp;
+    a2dp_mpeg_t *config;
+
+    t = pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
+    pa_assert(t);
+
+    config = (a2dp_mpeg_t *) t->config;
+
+    return 0;
+}
+
+static int bt_transport_config_a2dp(struct userdata *u) {
+    return bt_transport_config_a2dp_mpeg(u);
 }
 
 static int bt_transport_config(struct userdata *u) {
