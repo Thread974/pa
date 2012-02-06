@@ -2188,7 +2188,6 @@ static int bt_transport_config_a2dp_sbc(struct userdata *u) {
 
 static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
     const pa_bluetooth_transport *t;
-    struct a2dp_info *a2dp = &u->a2dp;
     a2dp_mpeg_t *config;
 
     t = pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
@@ -2196,14 +2195,54 @@ static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
 
     config = (a2dp_mpeg_t *) t->config;
 
+    u->sample_spec.format = PA_SAMPLE_S16LE;
+
+    switch (config->frequency) {
+        case BT_MPEG_SAMPLING_FREQ_16000:
+            u->sample_spec.rate = 16000U;
+            break;
+        case BT_MPEG_SAMPLING_FREQ_22050:
+            u->sample_spec.rate = 22050U;
+            break;
+        case BT_MPEG_SAMPLING_FREQ_24000:
+            u->sample_spec.rate = 24000U;
+            break;
+        case BT_MPEG_SAMPLING_FREQ_32000:
+            u->sample_spec.rate = 32000U;
+            break;
+        case BT_MPEG_SAMPLING_FREQ_44100:
+            u->sample_spec.rate = 44100U;
+            break;
+        case BT_MPEG_SAMPLING_FREQ_48000:
+            u->sample_spec.rate = 48000U;
+            break;
+        default:
+            pa_assert_not_reached();
+    }
+
+    switch (config->channel_mode) {
+        case BT_A2DP_CHANNEL_MODE_MONO:
+            u->sample_spec.channels = 1;
+            break;
+        case BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL:
+            u->sample_spec.channels = 2;
+            break;
+        case BT_A2DP_CHANNEL_MODE_STEREO:
+            u->sample_spec.channels = 2;
+            break;
+        case BT_A2DP_CHANNEL_MODE_JOINT_STEREO:
+            u->sample_spec.channels = 2;
+            break;
+        default:
+            pa_assert_not_reached();
+    }
+
+    u->block_size = 1152*4;
+    u->leftover_bytes = 0;
+
+    pa_log_info("MPEG selected\n");
+
     return 0;
-}
-
-static int bt_transport_config_a2dp(struct userdata *u) {
-    if (u->a2dp.mode == A2DP_MODE_MPEG)
-        return bt_transport_config_a2dp_mpeg(u);
-
-    return bt_transport_config_a2dp_sbc(u);
 }
 
 static int bt_transport_config(struct userdata *u) {
@@ -2216,7 +2255,10 @@ static int bt_transport_config(struct userdata *u) {
         return 0;
     }
 
-    return bt_transport_config_a2dp(u);
+    if (u->a2dp.mode == A2DP_MODE_MPEG)
+        return bt_transport_config_a2dp_mpeg(u);
+
+    return bt_transport_config_a2dp_sbc(u);
 }
 
 /* Run from main thread */
