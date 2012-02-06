@@ -674,7 +674,7 @@ static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
 
     register_endpoint(y, path, HFP_AG_ENDPOINT, HFP_AG_UUID, NULL, 0);
     register_endpoint(y, path, HFP_HS_ENDPOINT, HFP_HS_UUID, NULL, 0);
-    register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, NULL, 0);
+    /* register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, NULL, 0); */
     register_endpoint(y, path, A2DP_SOURCE_ENDPOINT_MPEG, A2DP_SOURCE_UUID, &source_caps, sizeof(source_caps));
     register_endpoint(y, path, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID, NULL, 0);
 }
