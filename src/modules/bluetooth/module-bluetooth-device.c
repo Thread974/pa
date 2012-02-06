@@ -3089,7 +3089,10 @@ static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
 }
 
 static int bt_transport_config_a2dp(struct userdata *u) {
-    return bt_transport_config_a2dp_mpeg(u);
+    if (u->a2dp.mode == A2DP_MODE_MPEG)
+        return bt_transport_config_a2dp_mpeg(u);
+
+    return bt_transport_config_a2dp_sbc(u);
 }
 
 static int bt_transport_config(struct userdata *u) {
@@ -3155,6 +3158,8 @@ static int setup_bt(struct userdata *u) {
     t = pa_bluetooth_device_get_transport(d, u->profile);
     if (t) {
         u->transport = pa_xstrdup(t->path);
+        u->a2dp.has_mpeg = (t->codec == 1);
+        u->a2dp.mode = (t->codec == 1) ? A2DP_MODE_MPEG : A2DP_MODE_SBC;
         return bt_transport_open(u);
     }
 
