@@ -2217,7 +2217,10 @@ static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
 }
 
 static int bt_transport_config_a2dp(struct userdata *u) {
-    return bt_transport_config_a2dp_mpeg(u);
+    if (u->a2dp.mode == A2DP_MODE_MPEG)
+        return bt_transport_config_a2dp_mpeg(u);
+
+    return bt_transport_config_a2dp_sbc(u);
 }
 
 static int bt_transport_config(struct userdata *u) {
@@ -2254,6 +2257,7 @@ static int setup_bt(struct userdata *u) {
 
     /* check if profile has a transport */
     t = pa_bluetooth_device_get_transport(d, u->profile);
+
     if (t == NULL) {
         pa_log_warn("Profile has no transport");
         return -1;
@@ -2263,7 +2267,8 @@ static int setup_bt(struct userdata *u) {
 
     if (u->profile == PROFILE_A2DP) {
         /* Connect for SBC to start with, switch later if required */
-        u->a2dp.mode = A2DP_MODE_SBC;
+        u->a2dp.has_mpeg = (t->codec == 1);
+        u->a2dp.mode = (t->codec == 1) ? A2DP_MODE_MPEG : A2DP_MODE_SBC;
     }
 
     if (bt_transport_acquire(u, FALSE) < 0)
