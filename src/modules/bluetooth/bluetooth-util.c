@@ -1192,6 +1192,9 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     t = transport_new(y, path, p, config, size);
     if (nrec)
         t->nrec = nrec;
+    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG))
+        t->codec = 1;
+
     pa_hashmap_put(d->transports, t->path, t);
 
     pa_log_debug("Transport %s profile %d available", t->path, t->profile);
