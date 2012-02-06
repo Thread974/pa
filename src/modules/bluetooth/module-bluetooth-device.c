@@ -1205,40 +1205,19 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
              * Would be better to be able to abort the stream gracefully. */
 
             pa_sink_input *i = PA_SINK_INPUT(data);
-            a2dp_mode_t mode;
 
             if (u->profile == PROFILE_A2DP) {
                 switch(i->format->encoding) {
                     case PA_ENCODING_PCM:
-                        mode = A2DP_MODE_SBC;
                         break;
 
                     case PA_ENCODING_MPEG_IEC61937:
                         pa_assert(u->a2dp.has_mpeg);
-                        mode = A2DP_MODE_MPEG;
+                        pa_assert(u->a2dp.mode == A2DP_MODE_MPEG);
                         break;
 
                     default:
                         pa_assert_not_reached();
-                }
-
-                if (PA_UNLIKELY(mode != u->a2dp.mode)) {
-                    /* FIXME: Just suspend should suffice? This resets the smoother */
-                    if (stop_stream_fd(u) < 0 || close_stream(u) < 0) {
-                        failed = TRUE;
-                        break;
-                    }
-
-                    u->a2dp.mode = mode;
-                    if (set_conf(u) < 0) {
-                        failed = TRUE;
-                        break;
-                    }
-
-                    if (start_stream_fd(u) < 0) {
-                        failed = TRUE;
-                        break;
-                    }
                 }
             }
 
