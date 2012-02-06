@@ -3106,7 +3106,7 @@ static int add_sink(struct userdata *u) {
         data.driver = __FILE__;
         data.module = u->module;
         pa_sink_new_data_set_sample_spec(&data, &u->sample_spec);
-        pa_proplist_sets(data.proplist, "bluetooth.protocol", (u->profile == PROFILE_A2DP) ? "a2dp" : "sco");
+        pa_proplist_sets(data.proplist, "bluetooth.protocol", u->profile == PROFILE_A2DP ? "a2dp" : u->profile == PROFILE_HFGW ? "hfgw" : "sco");
         if (u->profile == PROFILE_HSP)
             pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "phone");
         data.card = u->card;
@@ -3170,7 +3170,7 @@ static int add_source(struct userdata *u) {
         data.driver = __FILE__;
         data.module = u->module;
         pa_source_new_data_set_sample_spec(&data, &u->sample_spec);
-        pa_proplist_sets(data.proplist, "bluetooth.protocol", u->profile == PROFILE_A2DP_SOURCE ? "a2dp_source" : "hsp");
+        pa_proplist_sets(data.proplist, "bluetooth.protocol", u->profile == PROFILE_A2DP_SOURCE ? "a2dp_source" : u->profile == PROFILE_HFGW ? "hfgw" : "hsp");
         if ((u->profile == PROFILE_HSP) || (u->profile == PROFILE_HFGW))
             pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "phone");
 
