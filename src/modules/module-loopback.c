@@ -163,6 +163,9 @@ static void adjust_rates(struct userdata *u) {
     pa_assert(u);
     pa_assert_ctl_context();
 
+    if (!u->source_output->source || !u->sink_input->sink)
+        return;
+
     pa_asyncmsgq_send(u->source_output->source->asyncmsgq, PA_MSGOBJECT(u->source_output), SOURCE_OUTPUT_MESSAGE_LATENCY_SNAPSHOT, NULL, 0, NULL);
     pa_asyncmsgq_send(u->sink_input->sink->asyncmsgq, PA_MSGOBJECT(u->sink_input), SINK_INPUT_MESSAGE_LATENCY_SNAPSHOT, NULL, 0, NULL);
 
