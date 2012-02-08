@@ -65,6 +65,17 @@ PA_MODULE_USAGE(
 
 #define DEFAULT_ADJUST_TIME_USEC (10*PA_USEC_PER_SEC)
 
+struct userdata;
+
+struct loopback_msg {
+    pa_msgobject parent;
+    struct userdata *u;
+};
+
+typedef struct loopback_msg loopback_msg;
+PA_DEFINE_PRIVATE_CLASS(loopback_msg, pa_msgobject);
+#define LOOPBACK_MSG(o) (loopback_msg_cast(o))
+
 struct userdata {
     pa_core *core;
     pa_module *module;
@@ -76,6 +87,10 @@ struct userdata {
     pa_memblockq *memblockq;
 
     pa_rtpoll_item *rtpoll_item_read, *rtpoll_item_write;
+
+    pa_asyncmsgq *requestmsgq;
+    loopback_msg *msg;
+    pa_io_event *io_event;
 
     pa_time_event *time_event;
     pa_usec_t adjust_time;
@@ -101,6 +116,11 @@ struct userdata {
         size_t min_memblockq_length;
         size_t max_request;
     } latency_snapshot;
+};
+
+enum {
+    LOOPBACK_MESSAGE_MAX_REQUEST_CHANGED,
+    LOOPBACK_MESSAGE_MAX
 };
 
 static const char* const valid_modargs[] = {
@@ -136,13 +156,28 @@ static void teardown(struct userdata *u) {
     pa_assert(u);
     pa_assert_ctl_context();
 
+    pa_log_debug("Teardown msg %p", u->msg);
+
     if (u->asyncmsgq)
         pa_asyncmsgq_flush(u->asyncmsgq, 0);
+
+    if (u->asyncmsgq)
+        pa_asyncmsgq_flush(u->requestmsgq, 0); /* Empty queue, do not execute messages */
 
     u->adjust_time = 0;
     if (u->time_event) {
         u->core->mainloop->time_free(u->time_event);
         u->time_event = NULL;
+    }
+
+    if (u->msg) {
+        pa_msgobject_unref(PA_MSGOBJECT(u->msg));
+        u->msg = NULL;
+    }
+
+    if (u->io_event) {
+        u->core->mainloop->io_free(u->io_event);
+        u->io_event = NULL;
     }
 
     if (u->sink_input)
@@ -226,6 +261,33 @@ static void adjust_rates(struct userdata *u) {
     pa_log_debug("[%s] Updated sampling rate to %lu Hz.", u->sink_input->sink->name, (unsigned long) new_rate);
 
     pa_core_rttime_restart(u->core, u->time_event, pa_rtclock_now() + u->adjust_time);
+}
+
+/* Called from main thread context */
+static int loopback_process_msg(pa_msgobject *obj, int code, void *data, int64_t offset, pa_memchunk *chunk) {
+    struct loopback_msg *m = LOOPBACK_MSG(obj);
+
+    switch (code) {
+        case LOOPBACK_MESSAGE_MAX_REQUEST_CHANGED: {
+            pa_log_debug("Max request changed executing msg %p", obj);
+
+            if (m->u->adjust_time > 0)
+                adjust_rates(m->u);
+            break;
+        }
+    }
+    return 0;
+}
+
+/* Called from main context */
+static void request_queue_event(pa_mainloop_api *a, pa_io_event* e, int fd, pa_io_event_flags_t events, void *userdata) {
+    struct userdata *u = userdata;
+
+    pa_assert(u);
+    pa_assert_ctl_context();
+
+    while (pa_asyncmsgq_process_one(u->requestmsgq) > 0)
+        ;
 }
 
 /* Called from main context */
@@ -594,8 +656,8 @@ static void sink_input_update_max_request_cb(pa_sink_input *i, size_t nbytes) {
     pa_assert_se(u = i->userdata);
 
     pa_memblockq_set_prebuf(u->memblockq, nbytes*2);
-    pa_log_info("Max request changed");
-    pa_asyncmsgq_post(pa_thread_mq_get()->outq, PA_MSGOBJECT(u->sink_input), SINK_INPUT_MESSAGE_MAX_REQUEST_CHANGED, NULL, 0, NULL, NULL);
+    pa_log_info("Max request changed msg %p", u->msg);
+    pa_asyncmsgq_post(u->requestmsgq, PA_MSGOBJECT(u->msg), LOOPBACK_MESSAGE_MAX_REQUEST_CHANGED, NULL, 0, NULL, NULL);
 }
 
 /* Called from main thread */
@@ -703,6 +765,14 @@ int pa__init(pa_module *m) {
     u->core = m->core;
     u->module = m;
     u->latency = (pa_usec_t) latency_msec * PA_USEC_PER_MSEC;
+
+    if (!(u->msg = pa_msgobject_new(loopback_msg)))
+        goto fail;
+
+    u->msg->parent.process_msg = loopback_process_msg;
+    u->msg->u = u;
+
+    pa_log_debug("Message object is at msg %p", u->msg);
 
     adjust_time_sec = DEFAULT_ADJUST_TIME_USEC / PA_USEC_PER_SEC;
     if (pa_modargs_get_value_u32(ma, "adjust_time", &adjust_time_sec) < 0) {
@@ -838,6 +908,8 @@ int pa__init(pa_module *m) {
     pa_memblock_unref(silence.memblock);
 
     u->asyncmsgq = pa_asyncmsgq_new(0);
+    u->requestmsgq = pa_asyncmsgq_new(0);
+    u->io_event = u->core->mainloop->io_new(u->core->mainloop, pa_asyncmsgq_read_fd(u->requestmsgq), PA_IO_EVENT_INPUT, request_queue_event, u);
 
     pa_sink_input_put(u->sink_input);
     pa_source_output_put(u->source_output);
@@ -869,6 +941,9 @@ void pa__done(pa_module*m) {
 
     if (u->memblockq)
         pa_memblockq_free(u->memblockq);
+
+    if (u->requestmsgq)
+        pa_asyncmsgq_unref(u->requestmsgq);
 
     if (u->asyncmsgq)
         pa_asyncmsgq_unref(u->asyncmsgq);
