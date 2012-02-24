@@ -38,6 +38,7 @@
 #define A2DP_SOURCE_ENDPOINT "/MediaEndpoint/A2DPSource"
 #define A2DP_SOURCE_ENDPOINT_MPEG "/MediaEndpoint/A2DPSourceMpeg"
 #define A2DP_SINK_ENDPOINT "/MediaEndpoint/A2DPSink"
+#define A2DP_SINK_ENDPOINT_MPEG "/MediaEndpoint/A2DPSinkMpeg"
 
 #define ENDPOINT_INTROSPECT_XML                                         \
     DBUS_INTROSPECT_1_0_XML_DOCTYPE_DECL_NODE                           \
@@ -680,6 +681,16 @@ static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
         .mpf = 0,
         .bitrate = 0xff,
     };
+    static const a2dp_mpeg_t sink_caps = {
+        .channel_mode = BT_A2DP_CHANNEL_MODE_MONO | BT_A2DP_CHANNEL_MODE_STEREO |
+                        BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL | BT_A2DP_CHANNEL_MODE_JOINT_STEREO,
+        .layer = BT_MPEG_LAYER_1 | BT_MPEG_LAYER_2 | BT_MPEG_LAYER_3,
+        .crc = 0,
+        .frequency = MPEG_SAMPLING_FREQ_44100|MPEG_SAMPLING_FREQ_48000,
+        .rfa = 0,
+        .mpf = 0,
+        .bitrate = 0xff,
+    };
 
     pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.bluez.Adapter", "ListDevices"));
     send_and_add_to_pending(y, m, list_devices_reply, NULL);
@@ -689,6 +700,7 @@ static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
     register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, A2DP_SOURCE_UUID, NULL, 0);
     register_endpoint(y, path, A2DP_SOURCE_ENDPOINT_MPEG, A2DP_SOURCE_UUID, &source_caps, sizeof(source_caps));
     register_endpoint(y, path, A2DP_SINK_ENDPOINT, A2DP_SINK_UUID, NULL, 0);
+    register_endpoint(y, path, A2DP_SINK_ENDPOINT_MPEG, A2DP_SINK_UUID, &sink_caps, sizeof(sink_caps));
 }
 
 static void list_adapters_reply(DBusPendingCall *pending, void *userdata) {
@@ -1204,7 +1216,7 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     t = transport_new(y, path, p, config, size);
     if (nrec)
         t->nrec = nrec;
-    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG))
+    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG) || dbus_message_has_path(m, A2DP_SINK_ENDPOINT_MPEG))
         t->codec = 1;
 
     pa_hashmap_put(d->transports, t->path, t);
@@ -1458,7 +1470,7 @@ static DBusMessage *endpoint_select_configuration(DBusConnection *c, DBusMessage
     if (dbus_message_has_path(m, HFP_AG_ENDPOINT) || dbus_message_has_path(m, HFP_HS_ENDPOINT))
         goto done;
 
-    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG))
+    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG) || dbus_message_has_path(m, A2DP_SINK_ENDPOINT_MPEG))
         size = endpoint_mpeg_select_configuration(y, cap, pconf, sizeof(config));
     else
         size = endpoint_sbc_select_configuration(y, cap, pconf, sizeof(config));
@@ -1497,8 +1509,9 @@ static DBusHandlerResult endpoint_handler(DBusConnection *c, DBusMessage *m, voi
     path = dbus_message_get_path(m);
     dbus_error_init(&e);
 
-    if (!pa_streq(path, A2DP_SOURCE_ENDPOINT_MPEG) && !pa_streq(path, A2DP_SOURCE_ENDPOINT) &&
-        !pa_streq(path, A2DP_SINK_ENDPOINT) && !pa_streq(path, HFP_AG_ENDPOINT) && !pa_streq(path, HFP_HS_ENDPOINT))
+    if (!pa_streq(path, A2DP_SOURCE_ENDPOINT_MPEG) && !pa_streq(path, A2DP_SINK_ENDPOINT_MPEG) &&
+        !pa_streq(path, A2DP_SOURCE_ENDPOINT) && !pa_streq(path, A2DP_SINK_ENDPOINT) &&
+        !pa_streq(path, HFP_AG_ENDPOINT) && !pa_streq(path, HFP_HS_ENDPOINT))
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
     if (dbus_message_is_method_call(m, "org.freedesktop.DBus.Introspectable", "Introspect")) {
@@ -1583,6 +1596,7 @@ pa_bluetooth_discovery* pa_bluetooth_discovery_get(pa_core *c) {
     pa_assert_se(dbus_connection_register_object_path(pa_dbus_connection_get(y->connection), A2DP_SOURCE_ENDPOINT, &vtable_endpoint, y));
     pa_assert_se(dbus_connection_register_object_path(pa_dbus_connection_get(y->connection), A2DP_SOURCE_ENDPOINT_MPEG, &vtable_endpoint, y));
     pa_assert_se(dbus_connection_register_object_path(pa_dbus_connection_get(y->connection), A2DP_SINK_ENDPOINT, &vtable_endpoint, y));
+    pa_assert_se(dbus_connection_register_object_path(pa_dbus_connection_get(y->connection), A2DP_SINK_ENDPOINT_MPEG, &vtable_endpoint, y));
 
     list_adapters(y);
 
@@ -1627,6 +1641,7 @@ void pa_bluetooth_discovery_unref(pa_bluetooth_discovery *y) {
         dbus_connection_unregister_object_path(pa_dbus_connection_get(y->connection), A2DP_SOURCE_ENDPOINT);
         dbus_connection_unregister_object_path(pa_dbus_connection_get(y->connection), A2DP_SOURCE_ENDPOINT_MPEG);
         dbus_connection_unregister_object_path(pa_dbus_connection_get(y->connection), A2DP_SINK_ENDPOINT);
+        dbus_connection_unregister_object_path(pa_dbus_connection_get(y->connection), A2DP_SINK_ENDPOINT_MPEG);
         pa_dbus_remove_matches(pa_dbus_connection_get(y->connection),
                                "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'",
                                "type='signal',sender='org.bluez',interface='org.bluez.Manager',member='AdapterAdded'",
