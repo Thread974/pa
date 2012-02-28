@@ -2735,6 +2735,31 @@ static pa_idxset* sink_get_formats(pa_sink *s) {
     return formats;
 }
 
+static pa_idxset* source_get_formats(pa_source *s) {
+    struct userdata *u;
+    pa_idxset *formats;
+    pa_format_info *f;
+
+    pa_assert(s);
+
+    formats = pa_idxset_new(NULL, NULL);
+
+    f = pa_format_info_new();
+    f->encoding = PA_ENCODING_PCM;
+    pa_idxset_put(formats, f, NULL);
+
+    u = (struct userdata *) s->userdata;
+
+    if (u->profile == PROFILE_A2DP && u->a2dp.has_mpeg) {
+        f = pa_format_info_new();
+        f->encoding = PA_ENCODING_MPEG_IEC61937;
+        /* FIXME: Populate supported rates, layers, ... */
+        pa_idxset_put(formats, f, NULL);
+    }
+
+    return formats;
+}
+
 /* Run from main thread */
 static int add_sink(struct userdata *u) {
     char *k;
@@ -2846,6 +2871,7 @@ static int add_source(struct userdata *u) {
 
         u->source->userdata = u;
         u->source->parent.process_msg = source_process_msg;
+        u->source->get_formats = source_get_formats;
 
         pa_source_set_fixed_latency(u->source,
                                     (u->profile == PROFILE_A2DP_SOURCE ? FIXED_LATENCY_RECORD_A2DP : FIXED_LATENCY_RECORD_HSP) +
