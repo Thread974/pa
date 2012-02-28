@@ -1253,7 +1253,7 @@ static int a2dp_process_push(struct userdata *u) {
         pa_usec_t tstamp;
         struct a2dp_info *a2dp;
         struct rtp_header *header;
-        struct sbc_rtp_payload *payload;
+        int payload_size;
         const void *p;
         void *d;
         ssize_t l;
@@ -1263,7 +1263,6 @@ static int a2dp_process_push(struct userdata *u) {
 
         a2dp = &u->a2dp;
         header = a2dp->buffer;
-        payload = (struct sbc_rtp_payload*) ((uint8_t*) a2dp->buffer + sizeof(*header));
 
         l = pa_read(u->stream_fd, a2dp->buffer, a2dp->buffer_size, &u->stream_write_type);
 
@@ -1295,8 +1294,9 @@ static int a2dp_process_push(struct userdata *u) {
         pa_smoother_put(u->read_smoother, tstamp, pa_bytes_to_usec(u->read_index, &u->sample_spec));
         pa_smoother_resume(u->read_smoother, tstamp, TRUE);
 
-        p = (uint8_t*) a2dp->buffer + sizeof(*header) + sizeof(*payload);
-        to_decode = l - sizeof(*header) - sizeof(*payload);
+        payload_size = (a2dp->mode == A2DP_MODE_SBC) ? sizeof(struct sbc_rtp_payload) : sizeof(struct mpeg_rtp_payload);
+        p = (uint8_t*) a2dp->buffer + sizeof(*header) + payload_size;
+        to_decode = l - sizeof(*header) - payload_size;
 
         d = pa_memblock_acquire(memchunk.memblock);
         to_write = memchunk.length = pa_memblock_get_length(memchunk.memblock);
@@ -1305,28 +1305,71 @@ static int a2dp_process_push(struct userdata *u) {
             size_t written;
             ssize_t decoded;
 
-            decoded = sbc_decode(&a2dp->sbc,
-                                 p, to_decode,
-                                 d, to_write,
-                                 &written);
+            switch (a2dp->mode) {
+            case A2DP_MODE_SBC:
 
-            if (PA_UNLIKELY(decoded <= 0)) {
-                pa_log_error("SBC decoding error (%li)", (long) decoded);
-                pa_memblock_release(memchunk.memblock);
-                pa_memblock_unref(memchunk.memblock);
-                return -1;
+                decoded = sbc_decode(&a2dp->sbc,
+                                     p, to_decode,
+                                     d, to_write,
+                                     &written);
+
+                if (PA_UNLIKELY(decoded <= 0)) {
+                    pa_log_error("SBC decoding error (%li)", (long) decoded);
+                    pa_memblock_release(memchunk.memblock);
+                    pa_memblock_unref(memchunk.memblock);
+                    return -1;
+                }
+
+/*                 pa_log_debug("SBC: decoded: %lu; written: %lu", (unsigned long) decoded, (unsigned long) written); */
+/*                 pa_log_debug("SBC: frame_length: %lu; codesize: %lu", (unsigned long) a2dp->frame_length, (unsigned long) a2dp->codesize); */
+
+                /* Reset frame length, it can be changed due to bitpool change */
+                a2dp->frame_length = sbc_get_frame_length(&a2dp->sbc);
+
+                pa_assert_fp((size_t) decoded <= to_decode);
+                pa_assert_fp((size_t) decoded == a2dp->frame_length);
+                pa_assert_fp((size_t) written == a2dp->codesize);
+                break;
+
+            case A2DP_MODE_MPEG: {
+                uint8_t *iec, *orig;
+                size_t i;
+
+                pa_assert(to_write == 1152 * 4);
+                pa_assert(to_decode < 1728);
+                pa_assert(to_decode < u->link_mtu);
+
+                /* Build IEC frame (16le formatting) */
+                iec = d;
+                iec[0] = 0x72;
+                iec[1] = 0xF8;
+                iec[2] = 0x1F;
+                iec[3] = 0x4E;
+                iec[4] = 0x05;
+                iec[5] = 0x05;
+                iec[6] = to_decode % 256 * 8;
+                iec[7] = to_decode / 256 % 256 * 8;
+                iec += 8;
+
+                orig = p;
+                for (i = 0; i < to_decode / 2; i++) {
+                    *(iec + 1) = *orig;
+                    *iec = *(orig + 1);
+                    iec += 2;
+                    orig += 2;
+                }
+
+                memset(iec, 0, to_write - to_decode - 8);
+
+                decoded = to_decode;
+                written = to_write;
+                pa_log_debug("MPEG: decoded: %lu; written: %lu", (unsigned long) decoded, (unsigned long) written);
+
+                break;
             }
-
-/*             pa_log_debug("SBC: decoded: %lu; written: %lu", (unsigned long) decoded, (unsigned long) written); */
-/*             pa_log_debug("SBC: frame_length: %lu; codesize: %lu", (unsigned long) a2dp->frame_length, (unsigned long) a2dp->codesize); */
-
-            /* Reset frame length, it can be changed due to bitpool change */
-            a2dp->frame_length = sbc_get_frame_length(&a2dp->sbc);
-
-            pa_assert_fp((size_t) decoded <= to_decode);
-            pa_assert_fp((size_t) decoded == a2dp->frame_length);
-
-            pa_assert_fp((size_t) written == a2dp->codesize);
+            default:
+                pa_assert_not_reached();
+            }
 
             p = (const uint8_t*) p + decoded;
             to_decode -= decoded;
