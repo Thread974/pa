@@ -214,6 +214,9 @@ enum {
 
 #define USE_SCO_OVER_PCM(u) (u->profile == PROFILE_HSP && (u->hsp.sco_sink && u->hsp.sco_source))
 
+#define MPEG_MIN_FRAME_SIZE 4
+#define MPEG_MAX_FRAME_SIZE 1728
+
 static int init_bt(struct userdata *u);
 static int init_profile(struct userdata *u);
 
@@ -1788,7 +1791,7 @@ static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len
                             }
 
                             /* sanity check */
-                            if (bits > 4 && bits <= 1728) { /* max frame length */
+                            if (bits > MPEG_MIN_FRAME_SIZE && bits <= MPEG_MAX_FRAME_SIZE) { /* max frame length */
                                 *len = bits;
                                 *sample_len = mpeg_frame_length[id][1];
                                 return TRUE;
@@ -1821,7 +1824,7 @@ static pa_bool_t do_sync_iec958(const uint8_t **p_src, uint32_t *input_bytes)
 
         /* we need 4 bytes to detect the Pa,Pb preambles */
         preambles = src[0]<<24 | src[1]<<16 | src[2]<<8 | src[3];
-#define IEC958_MAGIC_NUMBER  0x72F81F4E
+#define IEC958_MAGIC_NUMBER  0x72F81F4E /* little endian encoded */
         if (preambles == IEC958_MAGIC_NUMBER) { /* little endian assumed */
             sync_found = TRUE;
             break;
@@ -2086,6 +2089,46 @@ static int a2dp_passthrough_process_render(struct userdata *u) {
     return ret;
 }
 
+/* Size of an IEC958 padded MPEG frame. */
+#define MPEGP_IEC_FRAME_SIZE (1152*4)
+/* Size of the IEC958 header. */
+#define MPEGP_IEC_HEADER_SIZE 8
+/* Size of the MPEG header. */
+#define MPEGP_MPEG_HEADER_SIZE 4
+
+typedef struct {
+  uint8_t sync_byte;
+
+  uint8_t protect:1;
+  uint8_t layer:2;
+  uint8_t sync:3;
+  uint8_t version:2;
+
+  uint8_t priv:1;
+  uint8_t padding:1;
+  uint8_t sampling:2;
+  uint8_t bitrate:4;
+
+  uint8_t emphasys:2;
+  uint8_t original:1;
+  uint8_t copyright:1;
+  uint8_t extension:2;
+  uint8_t channelmode:2;
+} mpeg_header;
+
+static int mp3_length(uint32_t header)
+{
+    mpeg_header *hdr = (mpeg_header *)&header;
+    int mpeg_frame_size = mpeg_layer_bitrates[hdr->version & 0x1][hdr->bitrate] * 1000
+                                          * mpeg_frame_length[hdr->version & 0x1][hdr->layer]
+                                          / mpeg_sampling_frequencies[hdr->version & 0x1][hdr->sampling] / 8;
+
+    if (hdr->padding)
+        mpeg_frame_size ++;
+
+    return mpeg_frame_size;
+}
+
 static int a2dp_process_push(struct userdata *u) {
     int ret = 0;
     pa_memchunk memchunk;
@@ -2095,11 +2138,16 @@ static int a2dp_process_push(struct userdata *u) {
     pa_assert(u->source);
     pa_assert(u->read_smoother);
 
-    memchunk.memblock = pa_memblock_new(u->core->mempool, u->block_size);
-    memchunk.index = memchunk.length = 0;
+    if (u->write_index == 0) {
+        memchunk.memblock = pa_memblock_new(u->core->mempool, u->block_size);
+        memchunk.index = memchunk.length = 0;
+    } else {
+        memchunk = u->write_memchunk;
+    }
 
     for (;;) {
         pa_bool_t found_tstamp = FALSE;
+        pa_bool_t complete = FALSE;
         pa_usec_t tstamp;
         struct a2dp_info *a2dp;
         struct rtp_header *header;
@@ -2149,7 +2197,10 @@ static int a2dp_process_push(struct userdata *u) {
         to_decode = l - sizeof(*header) - payload_size;
 
         d = pa_memblock_acquire(memchunk.memblock);
-        to_write = memchunk.length = pa_memblock_get_length(memchunk.memblock);
+        if (memchunk.length == 0)
+            memchunk.length = pa_memblock_get_length(memchunk.memblock);
+
+        to_write = memchunk.length;
 
         while (PA_LIKELY(to_decode > 0)) {
             size_t written;
@@ -2179,42 +2230,140 @@ static int a2dp_process_push(struct userdata *u) {
                 pa_assert_fp((size_t) decoded <= to_decode);
                 pa_assert_fp((size_t) decoded == a2dp->frame_length);
                 pa_assert_fp((size_t) written == a2dp->codesize);
+                complete = TRUE;
                 break;
 
             case A2DP_MODE_MPEG: {
-                uint8_t *iec, *orig;
+                uint8_t *iec;
+                const uint8_t *orig;
+                size_t mp3_len, payload_len, swap_len, sample_length;
                 size_t i;
 
-                pa_assert(to_write == 1152 * 4);
-                pa_assert(to_decode < 1728);
-                pa_assert(to_decode < u->link_mtu);
-
-                /* Build IEC frame (16le formatting) */
-                iec = d;
-                iec[0] = 0x72;
-                iec[1] = 0xF8;
-                iec[2] = 0x1F;
-                iec[3] = 0x4E;
-                iec[4] = 0x05;
-                iec[5] = 0x05;
-                iec[6] = to_decode % 256 * 8;
-                iec[7] = to_decode / 256 % 256 * 8;
-                iec += 8;
-
                 orig = p;
-                for (i = 0; i < to_decode / 2; i++) {
-                    *(iec + 1) = *orig;
-                    *iec = *(orig + 1);
-                    iec += 2;
-                    orig += 2;
+                pa_log_debug("MPEG: first bytes received : %x %x %x %x", (int)orig[0], (int)orig[1], (int)orig[2], (int)orig[3]);
+                if (u->write_index == 0) {
+
+                    if (mp3_synclength(orig[0]<<24 | orig[1]<<16 | orig[2]<<8 | orig[3], &mp3_len, &sample_length)) {
+
+                        mp3_len = mp3_length(orig[0]<<24 | orig[1]<<16 | orig[2]<<8 | orig[3]);
+
+                        /* round to ceiling for payload length, required because of byte swaps */
+                        payload_len = mp3_len + 1;
+                        payload_len >>= 1;
+                        payload_len <<= 1;
+
+                        /* memblock contains enough room for full IEC frame */
+
+                        /* If the frame is not complete, then either
+                              store and wait for another frame
+                       or push the existing data into PA (is it possible or useful, the zero padding would not be added?)
+                          his should not add latency since nothing can be done using an incomplete frame
+                          note that the iec header is added only on a starting frame
+                          */
+                        /* Maximum MPEG frame as seen elsewhere in this code : MPEG_MAX_FRAME_SIZE bytes */
+                        /* Example bluetooth MTU 672 bytes */
+
+                        /* Build IEC header (16le formatting) */
+                        iec = d;
+                        *iec++ = 0x72;
+                        *iec++ = 0xf8;
+                        *iec++ = 0x1f;
+                        *iec++ = 0x4e;
+                        *iec++ = 0x05;
+                        *iec++ = 0x05;
+                        *iec++ = (mp3_len * 8) & 0xFF;
+                        *iec++ = ((mp3_len * 8) >> 8) & 0xFF;
+
+                        /* Take the incoming bytes and swap to 16LE */
+                        swap_len = PA_MIN(to_decode,payload_len);
+                        for (i = 0; i < swap_len / 2; i++) {
+                            *iec++ = *(orig + 1);
+                            *iec++ = *orig;
+                            orig += 2;
+                        }
+                        if (swap_len % 2) {
+                            *iec++ = 0;
+                            *iec++ = *orig++;
+                        }
+
+                        /* FIXME: Should use mp3_len or payload_len? */
+                        /* Payload_len works with packet sent from pulse, but may not work if packet is sent by someone else */
+                        if (payload_len < to_decode) {
+                            /* This +1 is a really dirty hack because A2DP process render has sent a packet of the wrong size */
+                            /* Not implemented, should push packet and continue buffer processing */
+                            /* Not sure this happen in real life though */
+                            pa_assert_not_reached();
+                        } else if(payload_len == to_decode) {
+                            pa_assert(payload_len == (size_t)iec - (size_t)d - 8);
+                            /* If an MP3 packet is processed, pad with zeroes and push */
+                            memset(iec, 0, u->block_size - payload_len - 8);
+                            decoded = to_decode;
+                            written = memchunk.length;
+                            complete = TRUE;
+                        } else /* payload_len > to_decode */ {
+                            /* If we have only a part of an MP3 packet, then keep track of current state for next packet */
+                            pa_log_debug("MPEG: fragmented MP3 frame, mp3_len %u, to_decode %u", mp3_len, to_decode);
+                            u->write_index = to_decode; /* Number of MPEG data written until now */
+                            pa_assert(u->write_index % 2 == 0);
+                            u->write_memchunk = memchunk;
+                            pa_memblock_ref(memchunk.memblock);
+                            decoded = to_decode;
+                            written = decoded;
+                        }
+
+                        pa_log_debug("MPEG: decoded: %lu; written: %lu", (unsigned long) decoded, (unsigned long) written);
+                    } else {
+                        pa_log("MPEG: Invalid frame, dropped");
+                        pa_assert_not_reached();
+                    }
+                } else {
+                    const uint8_t *hdr = d;
+                    pa_log_debug("MPEG: first bytes stored : %x %x %x %x %x %x %x %x %x %x %x %x", (int)hdr[0], (int)hdr[1], (int)hdr[2], (int)hdr[3], (int)hdr[4], (int)hdr[5], (int)hdr[6], (int)hdr[7], (int)hdr[8], (int)hdr[9], (int)hdr[10], (int)hdr[11]);
+                    mp3_len = mp3_length(hdr[10]<<24 | hdr[11]<<16 | hdr[8]<<8 | hdr[9]);
+                    pa_log_debug("MPEG: Continuation frame  u->write_index %lu, mp3_len %u, to_decode %u", (long unsigned int)u->write_index, mp3_len, to_decode);
+
+                    /* round to ceiling for payload length, required because of byte swaps */
+                    payload_len = mp3_len + 1;
+                    payload_len >>= 1;
+                    payload_len <<= 1;
+
+                    pa_assert(u->write_index % 2 == 0);
+                    pa_assert(u->write_index < MPEG_MAX_FRAME_SIZE);
+                    pa_assert(mp3_len <= MPEG_MAX_FRAME_SIZE);
+
+                    iec = d;
+                    iec += u->write_index + 8;
+
+                    /* Take the incoming bytes and swap to 16LE */
+                    swap_len = PA_MIN(to_decode, payload_len - u->write_index);
+                    for (i = 0; i < swap_len / 2; i++) {
+                        *iec++ = *(orig + 1);
+                        *iec++ = *orig;
+                        orig += 2;
+                    }
+                    if (swap_len % 2) {
+                        *iec++ = 0;
+                        *iec++ = *orig++;
+                    }
+
+                    if (payload_len == u->write_index + swap_len) {
+                        pa_assert(payload_len == (size_t)iec - (size_t)d - 8);
+                        /* Pad with zeroes */
+                        pa_log_debug("MPEG: fragmented MP3 frame, mp3_len %u, swap_len %u", mp3_len, swap_len);
+                        memset(iec, 0, u->block_size - u->write_index - swap_len - 8);
+                        decoded = to_decode;
+                        written = memchunk.length;
+                        complete = TRUE;
+                    } else if (payload_len > u->write_index + swap_len) {
+                        pa_log_debug("MPEG: to be continued");
+                        u->write_index += swap_len;
+                        pa_assert(u->write_index % 2 == 0);
+                        decoded = to_decode;
+                        written = decoded;
+                    } else {
+                        pa_log("MPEG: Something is wrong, mp3_len %u < u->write_index %u +  swap_len %u", mp3_len, (unsigned int)u->write_index, swap_len);
+                    }
                 }
-
-                memset(iec, 0, to_write - to_decode - 8);
-
-                decoded = to_decode;
-                written = to_write;
-                pa_log_debug("MPEG: decoded: %lu; written: %lu", (unsigned long) decoded, (unsigned long) written);
-
                 break;
             }
             default:
@@ -2229,16 +2378,21 @@ static int a2dp_process_push(struct userdata *u) {
         }
 
         memchunk.length -= to_write;
-
         pa_memblock_release(memchunk.memblock);
 
-        pa_source_post(u->source, &memchunk);
+        if (complete) {
+            pa_source_post(u->source, &memchunk);
+            pa_memblock_unref(memchunk.memblock);
+
+            u->write_index = u->write_memchunk.index = u->write_memchunk.length = 0;
+            u->write_memchunk.memblock = NULL;
+        } else {
+            pa_log_debug("MPEG: frame kept for later");
+        }
 
         ret = 1;
         break;
     }
-
-    pa_memblock_unref(memchunk.memblock);
 
     return ret;
 }
@@ -3195,7 +3349,7 @@ static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
             pa_assert_not_reached();
     }
 
-    u->block_size = 1152*4;
+    u->block_size = 1152*4; /* Maximum size of an IEC frame */
     u->leftover_bytes = 0;
 
     pa_log_info("MPEG selected\n");
