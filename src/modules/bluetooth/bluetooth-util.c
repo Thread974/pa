@@ -726,9 +726,9 @@ static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
     static const a2dp_mpeg_t sink_caps = {
         .channel_mode = BT_A2DP_CHANNEL_MODE_MONO | BT_A2DP_CHANNEL_MODE_STEREO |
                         BT_A2DP_CHANNEL_MODE_DUAL_CHANNEL | BT_A2DP_CHANNEL_MODE_JOINT_STEREO,
-        .layer = BT_MPEG_LAYER_1 | BT_MPEG_LAYER_2 | BT_MPEG_LAYER_3,
+        .layer = 1, /* BT_MPEG_LAYER_3 */
         .crc = 0,
-        .frequency = MPEG_SAMPLING_FREQ_44100|MPEG_SAMPLING_FREQ_48000,
+        .frequency = (1 << 1) | 1, /* 44100 | 48000 Hz */
         .rfa = 0,
         .mpf = 0,
         .bitrate = 0xff,
