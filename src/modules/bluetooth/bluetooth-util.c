@@ -75,6 +75,11 @@ struct pa_bluetooth_discovery {
     pa_bool_t filter_added;
 };
 
+struct pending_config_info {
+    bt_transport_config_cb_t cb;
+    void *data;
+};
+
 static void get_properties_reply(DBusPendingCall *pending, void *userdata);
 static pa_dbus_pending* send_and_add_to_pending(pa_bluetooth_discovery *y, DBusMessage *m, DBusPendingCallNotifyFunction func, void *call_data);
 static void found_adapter(pa_bluetooth_discovery *y, const char *path);
@@ -1024,6 +1029,65 @@ const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetoo
             return t;
 
     return NULL;
+}
+
+static void request_configuration_reply(DBusPendingCall *pending, void *userdata) {
+    DBusMessage *r;
+    pa_dbus_pending *p;
+    pa_bluetooth_discovery *y;
+    struct pending_config_info *cbinfo;
+    int err;
+
+    pa_assert(pending);
+
+    pa_assert_se(p = userdata);
+    pa_assert_se(y = p->context_data);
+    pa_assert_se(cbinfo = p->call_data);
+    pa_assert_se(r = dbus_pending_call_steal_reply(pending));
+
+    if (dbus_message_is_error(r, DBUS_ERROR_SERVICE_UNKNOWN)) {
+        pa_log("Bluetooth daemon is apparently not available.");
+        err = -1;
+        goto finish;
+    }
+
+    if (dbus_message_get_type(r) == DBUS_MESSAGE_TYPE_ERROR) {
+        pa_log("org.bluez.MediaTransport.RequestTransport() failed: %s: %s", dbus_message_get_error_name(r), pa_dbus_get_error_message(r));
+        err = -2;
+        goto finish;
+    }
+
+    err = 0;
+
+finish:
+    dbus_message_unref(r);
+
+    PA_LLIST_REMOVE(pa_dbus_pending, y->pending, p);
+    pa_dbus_pending_free(p);
+
+    if (cbinfo->cb)
+        cbinfo->cb(err, cbinfo->data);
+
+    pa_xfree(cbinfo);
+}
+
+void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const char *endpoint, bt_transport_config_cb_t cb, void *data) {
+    DBusMessage *m;
+    DBusError err;
+    struct pending_config_info *cbinfo;
+
+    pa_assert(t);
+    pa_assert(t->y);
+
+    dbus_error_init(&err);
+
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", t->path, "org.bluez.MediaTransport", "RequestTransport"));
+    pa_assert_se(dbus_message_append_args(m, DBUS_TYPE_STRING, &endpoint, DBUS_TYPE_INVALID));
+
+    cbinfo = pa_xmalloc(sizeof(struct pending_config_info));
+    cbinfo->cb = cb;
+    cbinfo->data = data;
+    send_and_add_to_pending(t->y, m, request_configuration_reply, cbinfo);
 }
 
 int pa_bluetooth_transport_acquire(const pa_bluetooth_transport *t, const char *accesstype, size_t *imtu, size_t *omtu) {

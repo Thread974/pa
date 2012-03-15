@@ -221,6 +221,65 @@ enum {
 #define MPEG_MAX_FRAME_SIZE 1728
 
 static int init_profile(struct userdata *u);
+static int bt_transport_acquire(struct userdata *u, pa_bool_t start);
+static int bt_transport_config(struct userdata *u);
+
+static int bt_transport_reconfigure_cb(int err, void *data) {
+    struct userdata *u = data;
+    const pa_bluetooth_device *d;
+    const pa_bluetooth_transport *t;
+
+    pa_assert(u);
+
+    pa_log_debug("Configuration for mode %s returned %d", (u->a2dp.mode == A2DP_MODE_SBC) ? "SBC":"MPEG", err);
+
+    if (err < 0)
+        return err;
+
+    if (!(d = pa_bluetooth_discovery_get_by_path(u->discovery, u->path))) {
+        pa_log_error("Failed to get device object.");
+        return -1;
+    }
+
+    /* check if profile has a new transport */
+    if (!(t = pa_bluetooth_device_get_transport(d, u->profile, (u->a2dp.mode == A2DP_MODE_MPEG) ? 1 : 0))) {
+        pa_log("No transport found for profile %d", u->profile);
+        return -2;
+    }
+
+    /* Acquire new transport */
+    u->transport = pa_xstrdup(t->path);
+    u->a2dp.has_mpeg = t->has_mpeg;
+    pa_log_debug("Configured for mode %s (t->codec %d)", (u->a2dp.mode == A2DP_MODE_SBC) ? "SBC":"MPEG", t->codec);
+    pa_log_debug("Transport %s config is now %x %x %x %x", t->path, t->config[0], t->config[1], t->config[2], t->config[3]);
+
+    if (bt_transport_config(u) < 0)
+        return -1;
+
+    return bt_transport_acquire(u, TRUE);
+}
+
+static int bt_transport_reconfigure(struct userdata *u, const char *endpoint) {
+    const pa_bluetooth_transport *t;
+
+    pa_log_debug("Configure for mode %s", (u->a2dp.mode == A2DP_MODE_SBC) ? "SBC":"MPEG");
+
+    t = pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
+    if (!t) {
+        pa_log("Transport %s no longer available", u->transport);
+        pa_xfree(u->transport);
+        u->transport = NULL;
+        return -1;
+    }
+
+    pa_bluetooth_transport_reconfigure(t, endpoint, bt_transport_reconfigure_cb, u);
+
+    /* After request configuration, transport will be recreated */
+    pa_xfree(u->transport);
+    u->transport = NULL;
+
+    return 0;
+}
 
 /* from IO thread */
 static void a2dp_set_bitpool(struct userdata *u, uint8_t bitpool)
