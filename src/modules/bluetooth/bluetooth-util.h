@@ -115,6 +115,8 @@ struct pa_bluetooth_device {
     pa_bt_audio_state_t hfgw_state;
 };
 
+typedef int (*bt_transport_config_cb_t)(int err, void *data);
+
 pa_bluetooth_discovery* pa_bluetooth_discovery_get(pa_core *core);
 pa_bluetooth_discovery* pa_bluetooth_discovery_ref(pa_bluetooth_discovery *y);
 void pa_bluetooth_discovery_unref(pa_bluetooth_discovery *d);
@@ -127,6 +129,7 @@ const pa_bluetooth_device* pa_bluetooth_discovery_get_by_address(pa_bluetooth_di
 const pa_bluetooth_transport* pa_bluetooth_discovery_get_transport(pa_bluetooth_discovery *y, const char *path);
 const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetooth_device *d, enum profile profile);
 
+void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const char *endpoint, bt_transport_config_cb_t cb, void *data);
 int pa_bluetooth_transport_acquire(const pa_bluetooth_transport *t, const char *accesstype, size_t *imtu, size_t *omtu);
 void pa_bluetooth_transport_release(const pa_bluetooth_transport *t, const char *accesstype);
 int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i);
