@@ -104,6 +104,9 @@ static const char* const valid_modargs[] = {
     NULL
 };
 
+#define A2DP_SOURCE_ENDPOINT "/MediaEndpoint/A2DPSource"
+#define A2DP_SOURCE_ENDPOINT_MPEG "/MediaEndpoint/A2DPSourceMpeg"
+
 typedef enum {
     A2DP_MODE_SBC,
     A2DP_MODE_MPEG,
@@ -242,7 +245,7 @@ static int bt_transport_reconfigure_cb(int err, void *data) {
     }
 
     /* check if profile has a new transport */
-    if (!(t = pa_bluetooth_device_get_transport(d, u->profile, (u->a2dp.mode == A2DP_MODE_MPEG) ? 1 : 0))) {
+    if (!(t = pa_bluetooth_device_get_transport(d, u->profile))) {
         pa_log("No transport found for profile %d", u->profile);
         return -2;
     }
@@ -432,7 +435,6 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
     int r;
 
     pa_assert(u->sink == PA_SINK(o));
-    pa_assert(u->transport);
 
     switch (code) {
 
@@ -447,23 +449,37 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
             pa_sink_input *i = PA_SINK_INPUT(data);
             a2dp_mode_t mode;
 
+            pa_log_debug("PA_SINK_MESSAGE_ADD_INPUT i %p encoding %d:%s passthrough %d, has_mpeg %d", i, i->format->encoding,
+                        (i->format->encoding == PA_ENCODING_PCM) ? "PCM" : (i->format->encoding == PA_ENCODING_MPEG_IEC61937) ? "IEC" : "Other",
+                        pa_sink_is_passthrough(u->sink),
+                        u->a2dp.has_mpeg);
+
             if (u->profile == PROFILE_A2DP) {
-                switch(i->format->encoding) {
-                    case PA_ENCODING_PCM:
-                        mode = A2DP_MODE_SBC;
-                        break;
-
-                    case PA_ENCODING_MPEG_IEC61937:
-                        pa_assert(u->a2dp.has_mpeg);
-                        mode = A2DP_MODE_MPEG;
-                        break;
-
-                    default:
-                        pa_assert_not_reached();
-                }
+                if (pa_sink_is_passthrough(u->sink) && u->a2dp.has_mpeg)
+                    mode = A2DP_MODE_MPEG;
+                else
+                    mode = A2DP_MODE_SBC;
 
                 if (PA_UNLIKELY(mode != u->a2dp.mode)) {
-                    /* FIXME: Just suspend should suffice? This resets the smoother */
+                    if (u->transport) {
+                        const char *endpoint = A2DP_SOURCE_ENDPOINT;
+                        bt_transport_release(u);
+
+                        u->a2dp.mode = mode;
+                        pa_log_debug("DBUS Switch to mode %s",  u->a2dp.mode == A2DP_MODE_SBC ? "SBC" : "MPEG");
+
+                        if (u->a2dp.mode == A2DP_MODE_MPEG)
+                          endpoint = A2DP_SOURCE_ENDPOINT_MPEG;
+
+                        if(bt_transport_reconfigure_cb(0, u) < 0) {
+                            if (bt_transport_reconfigure(u, endpoint) < 0)
+                                failed = TRUE;
+                        }
+                    } else {
+                        u->a2dp.mode = mode;
+                        if(bt_transport_reconfigure_cb(0, u) < 0)
+                            failed = TRUE;
+                    }
                 }
             }
 
@@ -2540,6 +2556,16 @@ static int bt_transport_config(struct userdata *u) {
         u->sample_spec.channels = 1;
         u->sample_spec.rate = 8000;
         return 0;
+    }
+
+    if (u->leftover_bytes) {
+        pa_log_debug("SBC parameters: %d bytes forgotten", u->leftover_bytes);
+        u->leftover_bytes = 0;
+    }
+    if(u->write_memchunk.memblock) {
+        pa_log_debug("SBC parameters: memblock forgotten");
+        pa_memblock_unref(u->write_memchunk.memblock);
+        pa_memchunk_reset(&u->write_memchunk);
     }
 
     if (u->a2dp.mode == A2DP_MODE_MPEG)
