@@ -1199,6 +1199,8 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     const char *path, *dev_path = NULL, *uuid = NULL;
     uint8_t *config = NULL;
     int size = 0;
+    uint8_t *codecs = NULL;
+    int i, ncodecs = 0;
     pa_bool_t nrec = FALSE;
     enum profile p;
     DBusMessageIter args, props;
@@ -1247,6 +1249,12 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
                 goto fail;
             dbus_message_iter_recurse(&value, &array);
             dbus_message_iter_get_fixed_array(&array, &config, &size);
+        } else if (strcasecmp(key, "Codecs") == 0) {
+            DBusMessageIter array;
+            if (var != DBUS_TYPE_ARRAY)
+                goto fail;
+            dbus_message_iter_recurse(&value, &array);
+            dbus_message_iter_get_fixed_array(&array, &codecs, &ncodecs);
         }
 
         dbus_message_iter_next(&props);
@@ -1268,12 +1276,14 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     t = transport_new(y, path, p, config, size);
     if (nrec)
         t->nrec = nrec;
-    if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT_MPEG) || dbus_message_has_path(m, A2DP_SINK_ENDPOINT_MPEG))
-        t->codec = 1;
+    for (i=0; i<ncodecs; i++) {
+        if (codecs[i] == A2DP_CODEC_MPEG12)
+            t->has_mpeg = TRUE;
+    }
 
     pa_hashmap_put(d->transports, t->path, t);
 
-    pa_log_debug("Transport %s profile %d available", t->path, t->profile);
+    pa_log_debug("Transport %s profile %d available (has_mpeg %d)", t->path, t->profile, t->has_mpeg);
 
     pa_assert_se(r = dbus_message_new_method_return(m));
 
