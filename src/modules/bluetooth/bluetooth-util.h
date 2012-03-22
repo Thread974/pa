@@ -76,6 +76,7 @@ struct pa_bluetooth_transport {
     uint8_t codec;
     uint8_t *config;
     int config_size;
+    pa_bool_t has_mpeg;
     pa_bool_t nrec;
 
     pa_hook hooks[PA_BLUETOOTH_TRANSPORT_HOOK_MAX];
