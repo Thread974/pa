@@ -255,19 +255,15 @@ static pa_hook_result_t update_device_profile(pa_bluetooth_discovery *y, const p
     pa_assert(u);
     pa_assert(d);
 
-    pa_log_info("device %s: audio %d, hfp %d, hfgw %d, a2dp %d, a2dp_source %d", d->name, d->audio_state, d->headset_state, d->hfgw_state, d->audio_sink_state, d->audio_source_state);
-
     name = pa_sprintf_malloc("bluez_card.%s", d->address);
 
     for (s = name; *s; s++)
         if (*s == ':')
             *s = '_';
 
-    pa_log_info("Card: %s", name);
     c = pa_namereg_get(u->core, name, PA_NAMEREG_CARD);
 
     if (!c) {
-         pa_log("No card found with name %s", name);
          pa_xfree(name);
          return PA_HOOK_OK;
     }
@@ -284,10 +280,8 @@ static pa_hook_result_t update_device_profile(pa_bluetooth_discovery *y, const p
     else
         profile = "off";
 
-    pa_log_debug("Set card %s to profile %s", c->name, profile);
     if (pa_card_set_profile(c, profile, FALSE))
         pa_log("Failed to set card %s to profile %s", c->name, profile);
-
 
     return PA_HOOK_OK;
 }
