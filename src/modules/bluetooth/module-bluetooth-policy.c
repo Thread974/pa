@@ -62,12 +62,11 @@ struct userdata {
 
 /* When a sink is created, loopback default source (microphone) on it */
 static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* userdata) {
-    pa_source *defsource;
-    pa_sink *defsink;
     struct userdata *u = userdata;
     const char *s;
     pa_module *m = NULL;
     char *args;
+    const char *role;
 
     pa_assert(c);
     pa_assert(sink);
@@ -102,25 +101,12 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* 
         return PA_HOOK_OK;
     }
 
-    /* Prevent loopback default source over default sink */
-    defsink = pa_namereg_get_default_sink(c);
-    if (defsink == sink) {
-        pa_log_debug("Refusing to loopback to default sink %s", sink->name);
-        return PA_HOOK_OK;
-    }
+    role = pa_proplist_gets(sink->proplist, PA_PROP_MEDIA_ROLE);
+    if (!role)
+        role = "abstract";
 
-    /* Find suitable source to loopback from */
-    defsource = pa_namereg_get_default_source(c);
-    if (!defsource)
-        defsource = defsink->monitor_source;
-
-    if (!defsource) {
-        pa_log_debug("Cannot find suitable source for loopback to %s", sink->name);
-        return PA_HOOK_OK;
-    }
-
-    /* Load module-loopback with selected source */
-    args = pa_sprintf_malloc("source=\"%s\" sink=\"%s\" source_dont_move=\"true\"", defsource->name, sink->name);
+    /* Load module-loopback with selected sink */
+    args = pa_sprintf_malloc("sink=\"%s\" sink_dont_move=\"true\" source_output_properties=\"media.role=%s\"", sink->name, role);
     m = pa_module_load(c, "module-loopback", args);
 
     if (m)
