@@ -2038,8 +2038,10 @@ static int add_sink(struct userdata *u) {
         data.module = u->module;
         pa_sink_new_data_set_sample_spec(&data, &u->sample_spec);
         pa_proplist_sets(data.proplist, "bluetooth.protocol", u->profile == PROFILE_A2DP ? "a2dp" : u->profile == PROFILE_HFGW ? "hfgw" : "sco");
-        if (u->profile == PROFILE_HSP)
+        if (u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW)
             pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "phone");
+        else if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE)
+            pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "music");
         data.card = u->card;
         data.name = get_name("sink", u->modargs, u->address, &b);
         data.namereg_fail = b;
@@ -2101,6 +2103,8 @@ static int add_source(struct userdata *u) {
         pa_proplist_sets(data.proplist, "bluetooth.protocol", u->profile == PROFILE_A2DP_SOURCE ? "a2dp_source" : u->profile == PROFILE_HFGW ? "hfgw" : "hsp");
         if ((u->profile == PROFILE_HSP) || (u->profile == PROFILE_HFGW))
             pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "phone");
+        else if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE)
+            pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "music");
 
         data.card = u->card;
         data.name = get_name("source", u->modargs, u->address, &b);
