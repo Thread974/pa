@@ -101,7 +101,7 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void* 
         return PA_HOOK_OK;
     }
 
-    role = pa_proplist_gets(sink->proplist, PA_PROP_MEDIA_ROLE);
+    role = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_INTENDED_ROLES);
     if (!role)
         role = "abstract";
 
@@ -160,7 +160,7 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
         return PA_HOOK_OK;
     }
 
-    role = pa_proplist_gets(source->proplist, PA_PROP_MEDIA_ROLE);
+    role = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_INTENDED_ROLES);
     if (!role)
         role = "abstract";
 
