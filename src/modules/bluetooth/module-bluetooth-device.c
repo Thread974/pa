@@ -2582,6 +2582,11 @@ static int card_set_profile(pa_card *c, pa_card_profile *new_profile) {
         return -PA_ERR_IO;
     }
 
+    if (c->active_profile == new_profile) {
+        pa_log_warn("Card %s is already using profile %s", c->name, new_profile->name);
+        return 0;
+    }
+
     if (u->sink) {
         inputs = pa_sink_move_all_start(u->sink, NULL);
 
