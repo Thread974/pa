@@ -647,10 +647,10 @@ static pa_bool_t sink_input_may_move_to_cb(pa_sink_input *i, pa_sink *dest) {
 int pa__init(pa_module *m) {
     pa_modargs *ma = NULL;
     struct userdata *u;
-    pa_sink *sink;
+    pa_sink *sink = NULL;
     pa_sink_input_new_data sink_input_data;
     pa_bool_t sink_dont_move;
-    pa_source *source;
+    pa_source *source = NULL;
     pa_source_output_new_data source_output_data;
     pa_bool_t source_dont_move;
     uint32_t latency_msec;
@@ -668,12 +668,14 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
-    if (!(source = pa_namereg_get(m->core, pa_modargs_get_value(ma, "source", NULL), PA_NAMEREG_SOURCE))) {
+    n = pa_modargs_get_value(ma, "source", NULL);
+    if (n && !(source = pa_namereg_get(m->core, n, PA_NAMEREG_SOURCE))) {
         pa_log("No such source.");
         goto fail;
     }
 
-    if (!(sink = pa_namereg_get(m->core, pa_modargs_get_value(ma, "sink", NULL), PA_NAMEREG_SINK))) {
+    n = pa_modargs_get_value(ma, "sink", NULL);
+    if (n && !(sink = pa_namereg_get(m->core, n, PA_NAMEREG_SINK))) {
         pa_log("No such sink.");
         goto fail;
     }
@@ -683,8 +685,21 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
-    ss = sink->sample_spec;
-    map = sink->channel_map;
+    if (sink) {
+        ss = sink->sample_spec;
+        map = sink->channel_map;
+    } else if (source) {
+        ss = source->sample_spec;
+        map = source->channel_map;
+    } else {
+        /* Dummy sample format */
+        ss.format = PA_SAMPLE_U8;
+        ss.rate = 8000;
+        ss.channels = 1;
+        map.channels = 1;
+        map.map[0] = PA_CHANNEL_POSITION_MONO;
+    }
+
     if (pa_modargs_get_sample_spec_and_channel_map(ma, &ss, &map, PA_CHANNEL_MAP_DEFAULT) < 0) {
         pa_log("Invalid sample format specification or channel map");
         goto fail;
@@ -715,7 +730,9 @@ int pa__init(pa_module *m) {
     pa_sink_input_new_data_init(&sink_input_data);
     sink_input_data.driver = __FILE__;
     sink_input_data.module = m;
-    pa_sink_input_new_data_set_sink(&sink_input_data, sink, FALSE);
+
+    if (sink)
+        pa_sink_input_new_data_set_sink(&sink_input_data, sink, FALSE);
 
     if (pa_modargs_get_proplist(ma, "sink_input_properties", sink_input_data.proplist, PA_UPDATE_REPLACE) < 0) {
         pa_log("Failed to parse the sink_input_properties value.");
@@ -736,7 +753,11 @@ int pa__init(pa_module *m) {
 
     pa_sink_input_new_data_set_sample_spec(&sink_input_data, &ss);
     pa_sink_input_new_data_set_channel_map(&sink_input_data, &map);
-    sink_input_data.flags = PA_SINK_INPUT_VARIABLE_RATE | (remix ? 0 : PA_SINK_INPUT_NO_REMIX);
+    if (sink || source) {
+        sink_input_data.flags = PA_SINK_INPUT_VARIABLE_RATE | (remix ? 0 : PA_SINK_INPUT_NO_REMIX);
+    } else {
+        sink_input_data.flags = PA_SINK_INPUT_FIX_FORMAT | PA_SINK_INPUT_FIX_RATE | PA_SINK_INPUT_FIX_CHANNELS;
+    }
 
     sink_dont_move = FALSE;
     if (pa_modargs_get_value_boolean(ma, "sink_dont_move", &sink_dont_move) < 0) {
@@ -770,7 +791,8 @@ int pa__init(pa_module *m) {
     pa_source_output_new_data_init(&source_output_data);
     source_output_data.driver = __FILE__;
     source_output_data.module = m;
-    pa_source_output_new_data_set_source(&source_output_data, source, FALSE);
+    if (source)
+        pa_source_output_new_data_set_source(&source_output_data, source, FALSE);
 
     if (pa_modargs_get_proplist(ma, "source_output_properties", source_output_data.proplist, PA_UPDATE_REPLACE) < 0) {
         pa_log("Failed to parse the source_output_properties value.");
@@ -791,7 +813,11 @@ int pa__init(pa_module *m) {
 
     pa_source_output_new_data_set_sample_spec(&source_output_data, &ss);
     pa_source_output_new_data_set_channel_map(&source_output_data, &map);
-    source_output_data.flags = (remix ? 0 : PA_SOURCE_OUTPUT_NO_REMIX);
+    if (sink || source) {
+        source_output_data.flags = (remix ? 0 : PA_SOURCE_OUTPUT_NO_REMIX);
+    } else {
+        source_output_data.flags = PA_SOURCE_OUTPUT_FIX_FORMAT | PA_SOURCE_OUTPUT_FIX_RATE | PA_SOURCE_OUTPUT_FIX_CHANNELS;
+    }
 
     source_dont_move = FALSE;
     if (pa_modargs_get_value_boolean(ma, "source_dont_move", &source_dont_move) < 0) {
