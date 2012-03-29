@@ -647,10 +647,10 @@ static pa_bool_t sink_input_may_move_to_cb(pa_sink_input *i, pa_sink *dest) {
 int pa__init(pa_module *m) {
     pa_modargs *ma = NULL;
     struct userdata *u;
-    pa_sink *sink;
+    pa_sink *sink = NULL;
     pa_sink_input_new_data sink_input_data;
     pa_bool_t sink_dont_move;
-    pa_source *source;
+    pa_source *source = NULL;
     pa_source_output_new_data source_output_data;
     pa_bool_t source_dont_move;
     uint32_t latency_msec;
@@ -668,12 +668,14 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
-    if (!(source = pa_namereg_get(m->core, pa_modargs_get_value(ma, "source", NULL), PA_NAMEREG_SOURCE))) {
+    n = pa_modargs_get_value(ma, "source", NULL);
+    if (n && !(source = pa_namereg_get(m->core, n, PA_NAMEREG_SOURCE))) {
         pa_log("No such source.");
         goto fail;
     }
 
-    if (!(sink = pa_namereg_get(m->core, pa_modargs_get_value(ma, "sink", NULL), PA_NAMEREG_SINK))) {
+    n = pa_modargs_get_value(ma, "sink", NULL);
+    if (n && !(sink = pa_namereg_get(m->core, n, PA_NAMEREG_SINK))) {
         pa_log("No such sink.");
         goto fail;
     }
@@ -683,8 +685,18 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
-    ss = sink->sample_spec;
-    map = sink->channel_map;
+    if (!sink && !source)
+        sink = pa_namereg_get_default_sink(m->core);
+
+    if (sink) {
+        ss = sink->sample_spec;
+        map = sink->channel_map;
+    } else if (source) {
+        ss = source->sample_spec;
+        map = source->channel_map;
+    } else
+        goto fail;
+
     if (pa_modargs_get_sample_spec_and_channel_map(ma, &ss, &map, PA_CHANNEL_MAP_DEFAULT) < 0) {
         pa_log("Invalid sample format specification or channel map");
         goto fail;
@@ -715,7 +727,9 @@ int pa__init(pa_module *m) {
     pa_sink_input_new_data_init(&sink_input_data);
     sink_input_data.driver = __FILE__;
     sink_input_data.module = m;
-    pa_sink_input_new_data_set_sink(&sink_input_data, sink, FALSE);
+
+    if(sink)
+        pa_sink_input_new_data_set_sink(&sink_input_data, sink, FALSE);
 
     if (pa_modargs_get_proplist(ma, "sink_input_properties", sink_input_data.proplist, PA_UPDATE_REPLACE) < 0) {
         pa_log("Failed to parse the sink_input_properties value.");
@@ -725,12 +739,12 @@ int pa__init(pa_module *m) {
 
     if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_NAME))
         pa_proplist_setf(sink_input_data.proplist, PA_PROP_MEDIA_NAME, "Loopback from %s",
-                         pa_strnull(pa_proplist_gets(source->proplist, PA_PROP_DEVICE_DESCRIPTION)));
+                         source ? pa_strnull(pa_proplist_gets(source->proplist, PA_PROP_DEVICE_DESCRIPTION)) : "unspecified source");
 
     if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ROLE))
         pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ROLE, "abstract");
 
-    if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME)
+    if (source && !pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME)
             && (n = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_ICON_NAME)))
         pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
@@ -770,7 +784,8 @@ int pa__init(pa_module *m) {
     pa_source_output_new_data_init(&source_output_data);
     source_output_data.driver = __FILE__;
     source_output_data.module = m;
-    pa_source_output_new_data_set_source(&source_output_data, source, FALSE);
+    if (source)
+        pa_source_output_new_data_set_source(&source_output_data, source, FALSE);
 
     if (pa_modargs_get_proplist(ma, "source_output_properties", source_output_data.proplist, PA_UPDATE_REPLACE) < 0) {
         pa_log("Failed to parse the source_output_properties value.");
@@ -780,12 +795,12 @@ int pa__init(pa_module *m) {
 
     if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_NAME))
         pa_proplist_setf(source_output_data.proplist, PA_PROP_MEDIA_NAME, "Loopback to %s",
-                         pa_strnull(pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_DESCRIPTION)));
+                         sink ? pa_strnull(pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_DESCRIPTION)) : "unspecified sink");
 
     if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ROLE))
         pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ROLE, "abstract");
 
-    if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME)
+    if (sink && !pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME)
             && (n = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_ICON_NAME)))
         pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
