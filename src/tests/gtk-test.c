@@ -31,6 +31,7 @@
 
 pa_context *ctxt;
 pa_glib_mainloop *m;
+int mute;
 
 static void context_state_callback(pa_context *c, void *userdata);
 
@@ -58,9 +59,25 @@ static void context_state_callback(pa_context *c, void *userdata) {
     }
 }
 
+void success_cb(pa_context *c, int success, void *userdata)
+{
+    g_print ("Operation result is %d\n", success);
+}
+
+/* Our usual callback function */
+static void callback( GtkWidget *widget,
+               gpointer   data )
+{
+    g_print ("Hello again - %s was pressed\n", (char *) data);
+    pa_context_set_sink_mute_by_index(ctxt, 0, mute, success_cb, NULL);
+    mute = !mute;
+}
+
 int main(int argc, char *argv[]) {
 
     GtkWidget *window;
+    GtkWidget *button;
+    mute = 0;
 
     gtk_init(&argc, &argv);
 
@@ -70,6 +87,12 @@ int main(int argc, char *argv[]) {
 
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW (window), g_get_application_name());
+
+    button = gtk_button_new_with_label ("Mute/unmute");
+    gtk_signal_connect(GTK_OBJECT (button), "clicked",
+                        GTK_SIGNAL_FUNC (callback), (gpointer) "cool button");
+    gtk_container_add (GTK_CONTAINER (window), button);
+
     gtk_widget_show_all(window);
 
     m = pa_glib_mainloop_new(NULL);
