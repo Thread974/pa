@@ -34,6 +34,9 @@ pa_bool_t pa_once_begin(pa_once *control) {
     if (pa_atomic_load(&control->done))
         return FALSE;
 
+    if (pa_atomic_cmpxchg(&control->sleep, 0, 1))
+        usleep(10000);
+
     pa_atomic_inc(&control->ref);
 
     /* Caveat: We have to make sure that the once func has completed
