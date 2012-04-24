@@ -29,11 +29,17 @@ typedef struct pa_once {
     pa_atomic_t ref, done;
 } pa_once;
 
+enum {
+    PA_ONCE_TODO,
+    PA_ONCE_DOING,
+    PA_ONCE_DONE
+};
+
 #define PA_ONCE_INIT                                                    \
     {                                                                   \
         .mutex = PA_ATOMIC_PTR_INIT(NULL),                              \
         .ref = PA_ATOMIC_INIT(0),                                       \
-        .done = PA_ATOMIC_INIT(0)                                       \
+        .done = PA_ATOMIC_INIT(PA_ONCE_TODO)                            \
     }
 
 /* Not to be called directly, use the macros defined below instead */
