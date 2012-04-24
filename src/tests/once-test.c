@@ -40,7 +40,7 @@ static pthread_barrier_t barrier;
 #endif
 static unsigned n_cpu;
 
-#define N_ITERATIONS 500
+#define N_ITERATIONS 50000
 #define N_THREADS 100
 
 static void once_func(void) {
@@ -85,6 +85,7 @@ int main(int argc, char *argv[]) {
         pa_assert_se(pthread_barrier_init(&barrier, NULL, N_THREADS) == 0);
 #endif
 
+        pa_log_info("Loop %d starting", n);
         /* Yes, kinda ugly */
         pa_zero(once);
 
@@ -94,8 +95,10 @@ int main(int argc, char *argv[]) {
         for (i = 0; i < N_THREADS; i++)
             pa_thread_join(threads[i]);
 
+        pa_assert(pa_atomic_ptr_load(&once.mutex) == NULL);
         pa_assert(n_run == 1);
-        pa_log_info("ran by %s", ran_by);
+
+        pa_log_info("Loop %d ran by %s", n, ran_by);
 
         for (i = 0; i < N_THREADS; i++) {
             pa_xfree(pa_thread_get_data(threads[i]));
