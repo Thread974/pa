@@ -40,7 +40,7 @@ static pthread_barrier_t barrier;
 #endif
 static unsigned n_cpu;
 
-#define N_ITERATIONS 50000
+#define N_ITERATIONS 5000
 #define N_THREADS 100
 
 static void once_func(void) {
