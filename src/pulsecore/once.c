@@ -34,36 +34,12 @@ pa_bool_t pa_once_begin(pa_once *control) {
     if (pa_atomic_load(&control->done))
         return FALSE;
 
-    pa_atomic_inc(&control->ref);
+    pthread_mutex_lock(&control->mutex);
 
-    /* Caveat: We have to make sure that the once func has completed
-     * before returning, even if the once func is not actually
-     * executed by us. Hence the awkward locking. */
+    if (!control->done.value)
+        return TRUE;
 
-    for (;;) {
-        pa_mutex *m;
-
-        if ((m = pa_atomic_ptr_load(&control->mutex))) {
-
-            /* The mutex is stored in locked state, hence let's just
-             * wait until it is unlocked */
-            pa_mutex_lock(m);
-
-            pa_assert(pa_atomic_load(&control->done));
-
-            pa_once_end(control);
-            return FALSE;
-        }
-
-        pa_assert_se(m = pa_mutex_new(FALSE, FALSE));
-        pa_mutex_lock(m);
-
-        if (pa_atomic_ptr_cmpxchg(&control->mutex, NULL, m))
-            return TRUE;
-
-        pa_mutex_unlock(m);
-        pa_mutex_free(m);
-    }
+    pthread_mutex_unlock(&control->mutex);
 }
 
 void pa_once_end(pa_once *control) {
@@ -73,13 +49,7 @@ void pa_once_end(pa_once *control) {
 
     pa_atomic_store(&control->done, 1);
 
-    pa_assert_se(m = pa_atomic_ptr_load(&control->mutex));
-    pa_mutex_unlock(m);
-
-    if (pa_atomic_dec(&control->ref) <= 1) {
-        pa_assert_se(pa_atomic_ptr_cmpxchg(&control->mutex, m, NULL));
-        pa_mutex_free(m);
-    }
+    pa_mutex_unlock(&control->mutex);
 }
 
 /* Not reentrant -- how could it be? */
