@@ -40,7 +40,7 @@ static pthread_barrier_t barrier;
 #endif
 static unsigned n_cpu;
 
-#define N_ITERATIONS 50000
+#define N_ITERATIONS 5000
 #define N_THREADS 100
 
 static void once_func(void) {
@@ -85,7 +85,7 @@ int main(int argc, char *argv[]) {
         pa_assert_se(pthread_barrier_init(&barrier, NULL, N_THREADS) == 0);
 #endif
 
-        pa_log_info("Loop %d starting", n);
+        pa_log_info("Loop %d starting %d", n, sizeof(pthread_mutex_t));
         /* Yes, kinda ugly */
         pa_zero(once);
 

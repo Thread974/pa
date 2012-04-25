@@ -23,10 +23,12 @@
 ***/
 
 #include <pulsecore/atomic.h>
+#include <pthread.h>
 
 typedef struct pa_once {
     pa_atomic_ptr_t mutex;
     pa_atomic_t ref, done;
+    pthread_mutex_t mtx;
 } pa_once;
 
 enum {
@@ -39,7 +41,8 @@ enum {
     {                                                                   \
         .mutex = PA_ATOMIC_PTR_INIT(NULL),                              \
         .ref = PA_ATOMIC_INIT(0),                                       \
-        .done = PA_ATOMIC_INIT(PA_ONCE_TODO)                            \
+        .done = PA_ATOMIC_INIT(PA_ONCE_TODO),                           \
+        .mtx = PTHREAD_MUTEX_INITIALIZER                                \
     }
 
 /* Not to be called directly, use the macros defined below instead */
