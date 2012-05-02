@@ -418,7 +418,8 @@ static int sink_input_pop_cb(pa_sink_input *i, size_t nbytes, pa_memchunk *chunk
     u->in_pop = FALSE;
 
     if (pa_memblockq_peek(u->memblockq, chunk) < 0) {
-        pa_log_info("Could not peek into queue");
+        if (pa_log_ratelimit(PA_LOG_INFO))
+            pa_log_info("Could not peek into queue");
         return -1;
     }
 
