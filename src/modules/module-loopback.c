@@ -132,7 +132,7 @@ enum {
 };
 
 /* Called from main context */
-static void teardown(struct userdata *u) {
+static void teardown(struct userdata *u, pa_bool_t teardown_input, pa_bool_t teardown_output) {
     pa_assert(u);
     pa_assert_ctl_context();
 
@@ -145,19 +145,19 @@ static void teardown(struct userdata *u) {
         u->time_event = NULL;
     }
 
-    if (u->sink_input)
+    if (teardown_input && u->sink_input)
         pa_sink_input_unlink(u->sink_input);
 
-    if (u->source_output)
+    if (teardown_output && u->source_output)
         pa_source_output_unlink(u->source_output);
 
-    if (u->sink_input) {
+    if (teardown_input && u->sink_input) {
         u->sink_input->parent.process_msg = pa_sink_input_process_msg;
         pa_sink_input_unref(u->sink_input);
         u->sink_input = NULL;
     }
 
-    if (u->source_output) {
+    if (teardown_output && u->source_output) {
         u->source_output->parent.process_msg = pa_source_output_process_msg;
         pa_source_output_unref(u->source_output);
         u->source_output = NULL;
@@ -351,7 +351,7 @@ static void source_output_kill_cb(pa_source_output *o) {
     pa_assert_ctl_context();
     pa_assert_se(u = o->userdata);
 
-    teardown(u);
+    teardown(u, FALSE, TRUE);
     pa_module_unload_request(u->module, TRUE);
 }
 
@@ -607,7 +607,7 @@ static void sink_input_kill_cb(pa_sink_input *i) {
     pa_assert_ctl_context();
     pa_assert_se(u = i->userdata);
 
-    teardown(u);
+    teardown(u, TRUE, FALSE);
     pa_module_unload_request(u->module, TRUE);
 }
 
@@ -932,7 +932,7 @@ void pa__done(pa_module*m) {
     if (!(u = m->userdata))
         return;
 
-    teardown(u);
+    teardown(u, TRUE, TRUE);
 
     if (u->memblockq)
         pa_memblockq_free(u->memblockq);
