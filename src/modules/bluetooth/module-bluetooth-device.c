@@ -1812,7 +1812,6 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
     } else if (dbus_message_is_signal(m, "org.bluez.MediaTransport", "PropertyChanged")) {
         DBusMessageIter arg_i;
         pa_bluetooth_transport *t;
-        pa_bool_t nrec;
 
         t = (pa_bluetooth_transport *) pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
         pa_assert(t);
@@ -1822,15 +1821,8 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
             goto fail;
         }
 
-        nrec = t->nrec;
-
-        if (pa_bluetooth_transport_parse_property(t, &arg_i) < 0)
+        if (pa_bluetooth_transport_parse_property(t, &arg_i, u->source) < 0)
             goto fail;
-
-        if (nrec != t->nrec) {
-            pa_log_debug("dbus: property 'NREC' changed to value '%s'", t->nrec ? "True" : "False");
-            pa_proplist_sets(u->source->proplist, "bluetooth.nrec", t->nrec ? "1" : "0");
-        }
     } else if (dbus_message_is_signal(m, "org.bluez.HandsfreeGateway", "PropertyChanged")) {
         const char *key;
         DBusMessageIter iter;

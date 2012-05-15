@@ -725,8 +725,7 @@ static void list_adapters(pa_bluetooth_discovery *y) {
     send_and_add_to_pending(y, m, list_adapters_reply, NULL);
 }
 
-int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i)
-{
+int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i, pa_source *source) {
     const char *key;
     DBusMessageIter variant_i;
 
@@ -749,18 +748,18 @@ int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessage
 
     dbus_message_iter_recurse(i, &variant_i);
 
-    switch (dbus_message_iter_get_arg_type(&variant_i)) {
+    if (pa_streq(key, "NREC")) {
+        if (dbus_message_iter_get_arg_type(&variant_i) != DBUS_TYPE_BOOLEAN) {
+            pa_log("Property value not a boolean.");
+            return -1;
+        }
 
-        case DBUS_TYPE_BOOLEAN: {
+        dbus_message_iter_get_basic(&variant_i, &t->nrec);
 
-            dbus_bool_t value;
-            dbus_message_iter_get_basic(&variant_i, &value);
-
-            if (pa_streq(key, "NREC"))
-                t->nrec = value;
-
-            break;
-         }
+        if (source) {
+            pa_log_debug("dbus: property 'NREC' changed to value '%s'", t->nrec ? "True" : "False");
+            pa_proplist_sets(source->proplist, "bluetooth.nrec", t->nrec ? "1" : "0");
+        }
     }
 
     return 0;
@@ -932,7 +931,7 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
             goto fail;
         }
 
-        if (pa_bluetooth_transport_parse_property(t, &arg_i) < 0)
+        if (pa_bluetooth_transport_parse_property(t, &arg_i, NULL) < 0)
             goto fail;
 
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -1107,7 +1106,7 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     const char *path, *dev_path = NULL, *uuid = NULL;
     uint8_t *config = NULL;
     int size = 0;
-    pa_bool_t nrec = FALSE;
+    dbus_bool_t nrec = FALSE;
     enum profile p;
     DBusMessageIter args, props;
     DBusMessage *r;
@@ -1144,11 +1143,9 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
                 goto fail;
             dbus_message_iter_get_basic(&value, &dev_path);
         } else if (strcasecmp(key, "NREC") == 0) {
-            dbus_bool_t tmp_boolean;
             if (var != DBUS_TYPE_BOOLEAN)
                 goto fail;
-            dbus_message_iter_get_basic(&value, &tmp_boolean);
-            nrec = tmp_boolean;
+            dbus_message_iter_get_basic(&value, &nrec);
         } else if (strcasecmp(key, "Configuration") == 0) {
             DBusMessageIter array;
             if (var != DBUS_TYPE_ARRAY)
