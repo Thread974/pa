@@ -1821,7 +1821,7 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
             goto fail;
         }
 
-        if (pa_bluetooth_transport_parse_property(t, &arg_i, u->source) < 0)
+        if (pa_bluetooth_transport_parse_property(t, &arg_i, u->source, u->sink, u->sample_spec.channels) < 0)
             goto fail;
     } else if (dbus_message_is_signal(m, "org.bluez.HandsfreeGateway", "PropertyChanged")) {
         const char *key;
@@ -1888,6 +1888,8 @@ static void sink_set_volume_cb(pa_sink *s) {
     pa_volume_t volume;
     struct userdata *u;
     char *k;
+    DBusMessageIter iter;
+    const char *name = "SpeakerGain";
 
     pa_assert(s);
     pa_assert(s->core);
@@ -1917,6 +1919,13 @@ static void sink_set_volume_cb(pa_sink *s) {
     pa_assert_se(dbus_message_append_args(m, DBUS_TYPE_UINT16, &gain, DBUS_TYPE_INVALID));
     pa_assert_se(dbus_connection_send(pa_dbus_connection_get(u->connection), m, NULL));
     dbus_message_unref(m);
+
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", u->transport, "org.bluez.MediaTransport", "SetProperty"));
+    dbus_message_iter_init_append(m, &iter);
+    pa_assert_se(dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &name));
+    pa_dbus_append_basic_variant(&iter, DBUS_TYPE_UINT16, &gain);
+    pa_assert_se(dbus_connection_send(pa_dbus_connection_get(u->connection), m, NULL));
+    dbus_message_unref(m);
 }
 
 /* Run from main thread */
@@ -1926,6 +1935,8 @@ static void source_set_volume_cb(pa_source *s) {
     pa_volume_t volume;
     struct userdata *u;
     char *k;
+    DBusMessageIter iter;
+    const char *name = "MicrophoneGain";
 
     pa_assert(s);
     pa_assert(s->core);
@@ -1953,6 +1964,13 @@ static void source_set_volume_cb(pa_source *s) {
 
     pa_assert_se(m = dbus_message_new_method_call("org.bluez", u->path, "org.bluez.Headset", "SetMicrophoneGain"));
     pa_assert_se(dbus_message_append_args(m, DBUS_TYPE_UINT16, &gain, DBUS_TYPE_INVALID));
+    pa_assert_se(dbus_connection_send(pa_dbus_connection_get(u->connection), m, NULL));
+    dbus_message_unref(m);
+
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", u->transport, "org.bluez.MediaTransport", "SetProperty"));
+    dbus_message_iter_init_append(m, &iter);
+    pa_assert_se(dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &name));
+    pa_dbus_append_basic_variant(&iter, DBUS_TYPE_UINT16, &gain);
     pa_assert_se(dbus_connection_send(pa_dbus_connection_get(u->connection), m, NULL));
     dbus_message_unref(m);
 }

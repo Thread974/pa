@@ -37,6 +37,7 @@
 #define HFP_HS_ENDPOINT "/MediaEndpoint/HFPHS"
 #define A2DP_SOURCE_ENDPOINT "/MediaEndpoint/A2DPSource"
 #define A2DP_SINK_ENDPOINT "/MediaEndpoint/A2DPSink"
+#define HSP_MAX_GAIN 15
 
 #define ENDPOINT_INTROSPECT_XML                                         \
     DBUS_INTROSPECT_1_0_XML_DOCTYPE_DECL_NODE                           \
@@ -725,7 +726,7 @@ static void list_adapters(pa_bluetooth_discovery *y) {
     send_and_add_to_pending(y, m, list_adapters_reply, NULL);
 }
 
-int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i, pa_source *source) {
+int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i, pa_source *source, pa_sink *sink, uint8_t channels) {
     const char *key;
     DBusMessageIter variant_i;
 
@@ -759,6 +760,48 @@ int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessage
         if (source) {
             pa_log_debug("dbus: property 'NREC' changed to value '%s'", t->nrec ? "True" : "False");
             pa_proplist_sets(source->proplist, "bluetooth.nrec", t->nrec ? "1" : "0");
+        }
+    } else if(pa_streq(key,"SpeakerGain")) {
+        if (dbus_message_iter_get_arg_type(&variant_i) != DBUS_TYPE_UINT16) {
+            pa_log("Property value not an uint16.");
+            return -1;
+        }
+
+        dbus_message_iter_get_basic(&variant_i, &t->sp_gain);
+
+        if (sink) {
+            pa_volume_t volume;
+            pa_cvolume v;
+
+            volume = (pa_volume_t) (t->sp_gain * PA_VOLUME_NORM / HSP_MAX_GAIN);
+
+            /* increment volume by one to correct rounding errors */
+            if (volume < PA_VOLUME_NORM)
+                volume++;
+
+            pa_cvolume_set(&v, channels, volume);
+            pa_sink_volume_changed(sink, &v);
+        }
+    } else if(pa_streq(key,"MicrophoneGain")) {
+        if (dbus_message_iter_get_arg_type(&variant_i) != DBUS_TYPE_UINT16) {
+            pa_log("Property value not an uint16.");
+            return -1;
+        }
+
+        dbus_message_iter_get_basic(&variant_i, &t->mic_gain);
+
+        if (source) {
+            pa_volume_t volume;
+            pa_cvolume v;
+
+            volume = (pa_volume_t) (t->mic_gain * PA_VOLUME_NORM / HSP_MAX_GAIN);
+
+            /* increment volume by one to correct rounding errors */
+            if (volume < PA_VOLUME_NORM)
+                volume++;
+
+            pa_cvolume_set(&v, channels, volume);
+            pa_source_volume_changed(source, &v);
         }
     }
 
@@ -931,7 +974,7 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
             goto fail;
         }
 
-        if (pa_bluetooth_transport_parse_property(t, &arg_i, NULL) < 0)
+        if (pa_bluetooth_transport_parse_property(t, &arg_i, NULL, NULL, 0) < 0)
             goto fail;
 
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -1107,6 +1150,8 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     uint8_t *config = NULL;
     int size = 0;
     dbus_bool_t nrec = FALSE;
+    uint16_t sp_gain = 15;
+    uint16_t mic_gain = 15;
     enum profile p;
     DBusMessageIter args, props;
     DBusMessage *r;
@@ -1152,6 +1197,14 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
                 goto fail;
             dbus_message_iter_recurse(&value, &array);
             dbus_message_iter_get_fixed_array(&array, &config, &size);
+        } else if (strcasecmp(key, "SpeakerGain") == 0) {
+            if (var != DBUS_TYPE_UINT16)
+                goto fail;
+            dbus_message_iter_get_basic(&value, &sp_gain);
+        } else if (strcasecmp(key, "MicrophoneGain") == 0) {
+            if (var != DBUS_TYPE_UINT16)
+                goto fail;
+            dbus_message_iter_get_basic(&value, &mic_gain);
         }
 
         dbus_message_iter_next(&props);
@@ -1173,6 +1226,8 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     t = transport_new(y, path, p, config, size);
     if (nrec)
         t->nrec = nrec;
+    t->sp_gain = sp_gain;
+    t->mic_gain = mic_gain;
     pa_hashmap_put(d->transports, t->path, t);
 
     pa_log_debug("Transport %s profile %d available", t->path, t->profile);

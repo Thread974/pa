@@ -71,6 +71,8 @@ struct pa_bluetooth_transport {
     uint8_t *config;
     int config_size;
     dbus_bool_t nrec;
+    uint16_t sp_gain;
+    uint16_t mic_gain;
 };
 
 /* This enum is shared among Audio, Headset, AudioSink, and AudioSource, although not all values are acceptable in all profiles */
@@ -129,7 +131,7 @@ const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetoo
 
 int pa_bluetooth_transport_acquire(const pa_bluetooth_transport *t, const char *accesstype, size_t *imtu, size_t *omtu);
 void pa_bluetooth_transport_release(const pa_bluetooth_transport *t, const char *accesstype);
-int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i, pa_source *source);
+int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i, pa_source *source, pa_sink *sink, uint8_t channels);
 
 pa_hook* pa_bluetooth_discovery_hook(pa_bluetooth_discovery *d);
 
