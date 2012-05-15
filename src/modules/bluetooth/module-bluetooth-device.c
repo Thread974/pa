@@ -123,6 +123,7 @@ struct hsp_info {
     pa_source *sco_source;
     void (*sco_source_set_volume)(pa_source *s);
     pa_hook_slot *sink_state_changed_slot;
+    pa_hook_slot *sink_property_changed_slot;
     pa_hook_slot *source_state_changed_slot;
 };
 
@@ -2061,6 +2062,41 @@ static pa_hook_result_t sink_state_changed_cb(pa_core *c, pa_sink *s, struct use
     return PA_HOOK_OK;
 }
 
+static pa_hook_result_t sink_property_changed_cb(pa_core *c, pa_sink *s, struct userdata *u) {
+    const char *str;
+    int val;
+    dbus_bool_t value;
+    DBusMessage *m;
+    DBusMessageIter iter;
+    const char *name = "InbandRingtone";
+
+    pa_assert(c);
+    pa_sink_assert_ref(s);
+    pa_assert(u);
+
+    if (s != u->sink)
+        return PA_HOOK_OK;
+
+    str = pa_proplist_gets(u->sink->proplist, "bluetooth.bsir");
+    if (str == NULL)
+        return PA_HOOK_OK;
+
+    val = pa_parse_boolean(str);
+    if (val < 0)
+        return PA_HOOK_OK;
+
+    value = !!val;
+
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", u->transport, "org.bluez.MediaTransport", "SetProperty"));
+    dbus_message_iter_init_append(m, &iter);
+    pa_assert_se(dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &name));
+    pa_dbus_append_basic_variant(&iter, DBUS_TYPE_BOOLEAN, &value);
+    pa_assert_se(dbus_connection_send(pa_dbus_connection_get(u->connection), m, NULL));
+    dbus_message_unref(m);
+
+    return PA_HOOK_OK;
+}
+
 static pa_hook_result_t source_state_changed_cb(pa_core *c, pa_source *s, struct userdata *u) {
     pa_assert(c);
     pa_source_assert_ref(s);
@@ -2131,6 +2167,9 @@ static int add_sink(struct userdata *u) {
     if (u->profile == PROFILE_HSP) {
         pa_sink_set_set_volume_callback(u->sink, sink_set_volume_cb);
         u->sink->n_volume_steps = 16;
+
+        if (!u->hsp.sink_property_changed_slot)
+            u->hsp.sink_property_changed_slot = pa_hook_connect(&u->core->hooks[PA_CORE_HOOK_SINK_PROPLIST_CHANGED], PA_HOOK_NORMAL, (pa_hook_cb_t) sink_property_changed_cb, u);
 
         k = pa_sprintf_malloc("bluetooth-device@%p", (void*) u->sink);
         pa_shared_set(u->core, k, u);
@@ -2483,6 +2522,11 @@ static void stop_thread(struct userdata *u) {
     if (u->hsp.sink_state_changed_slot) {
         pa_hook_slot_free(u->hsp.sink_state_changed_slot);
         u->hsp.sink_state_changed_slot = NULL;
+    }
+
+    if (u->hsp.sink_property_changed_slot) {
+        pa_hook_slot_free(u->hsp.sink_property_changed_slot);
+        u->hsp.sink_property_changed_slot = NULL;
     }
 
     if (u->hsp.source_state_changed_slot) {
