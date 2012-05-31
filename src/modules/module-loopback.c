@@ -740,16 +740,8 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
-    if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_NAME))
-        pa_proplist_setf(sink_input_data.proplist, PA_PROP_MEDIA_NAME, "Loopback from %s",
-                         pa_strnull(pa_proplist_gets(source->proplist, PA_PROP_DEVICE_DESCRIPTION)));
-
     if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ROLE))
         pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ROLE, "abstract");
-
-    if (!pa_proplist_contains(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME)
-            && (n = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_ICON_NAME)))
-        pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
     pa_sink_input_new_data_set_sample_spec(&sink_input_data, &ss);
     pa_sink_input_new_data_set_channel_map(&sink_input_data, &map);
@@ -800,16 +792,8 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
-    if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_NAME))
-        pa_proplist_setf(source_output_data.proplist, PA_PROP_MEDIA_NAME, "Loopback to %s",
-                         pa_strnull(pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_DESCRIPTION)));
-
     if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ROLE))
         pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ROLE, "abstract");
-
-    if (!pa_proplist_contains(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME)
-            && (n = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_ICON_NAME)))
-        pa_proplist_sets(source_output_data.proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
     pa_source_output_new_data_set_sample_spec(&source_output_data, &ss);
     pa_source_output_new_data_set_channel_map(&source_output_data, &map);
@@ -861,6 +845,22 @@ int pa__init(pa_module *m) {
     pa_memblock_unref(silence.memblock);
 
     u->asyncmsgq = pa_asyncmsgq_new(0);
+
+    if (!pa_proplist_contains(u->source_output->proplist, PA_PROP_MEDIA_NAME))
+        pa_proplist_setf(u->source_output->proplist, PA_PROP_MEDIA_NAME, "Loopback to %s",
+                         pa_strnull(pa_proplist_gets(u->sink_input->sink->proplist, PA_PROP_DEVICE_DESCRIPTION)));
+
+    if (!pa_proplist_contains(u->source_output->proplist, PA_PROP_MEDIA_ICON_NAME)
+            && (n = pa_proplist_gets(u->sink_input->sink->proplist, PA_PROP_DEVICE_ICON_NAME)))
+        pa_proplist_sets(u->source_output->proplist, PA_PROP_MEDIA_ICON_NAME, n);
+
+    if (!pa_proplist_contains(u->sink_input->proplist, PA_PROP_MEDIA_NAME))
+        pa_proplist_setf(u->sink_input->proplist, PA_PROP_MEDIA_NAME, "Loopback from %s",
+                         pa_strnull(pa_proplist_gets(u->source_output->source->proplist, PA_PROP_DEVICE_DESCRIPTION)));
+
+    if (source && !pa_proplist_contains(u->sink_input->proplist, PA_PROP_MEDIA_ICON_NAME)
+            && (n = pa_proplist_gets(u->source_output->source->proplist, PA_PROP_DEVICE_ICON_NAME)))
+        pa_proplist_sets(u->sink_input->proplist, PA_PROP_MEDIA_ICON_NAME, n);
 
     pa_sink_input_put(u->sink_input);
     pa_source_output_put(u->source_output);
