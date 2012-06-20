@@ -71,6 +71,8 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
 
     if pa_streq(s, "a2dp_source")
         role = "music";
+    else if pa_streq(s, "hfgw")
+        role = "phone";
     else {
         pa_log_debug("Profile %s cannot be selected for loopback", s);
         return PA_HOOK_OK;
