@@ -67,6 +67,8 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
 
     if pa_streq(s, "a2dp_source")
         role = "music";
+    else if pa_streq(s, "hsp")
+        role = "phone";
     else if pa_streq(s, "hfgw")
         role = "phone";
     else {
