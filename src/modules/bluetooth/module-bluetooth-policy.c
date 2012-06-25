@@ -52,10 +52,6 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     pa_assert(c);
     pa_assert(source);
 
-    /* Don't want to run during startup or shutdown */
-    if (c->state != PA_CORE_RUNNING)
-        return PA_HOOK_OK;
-
     /* Only consider bluetooth sinks and sources */
     s = pa_proplist_gets(source->proplist, PA_PROP_DEVICE_BUS);
     if (!s)
