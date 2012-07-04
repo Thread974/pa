@@ -245,7 +245,7 @@ static int bt_transport_reconfigure_cb(int err, void *data) {
     }
 
     /* check if profile has a new transport */
-    if (!(t = pa_bluetooth_device_get_transport(d, u->profile))) {
+    if (!(t = pa_bluetooth_device_get_transport(d, u->profile, (u->a2dp.mode == A2DP_MODE_MPEG) ? 1 : 0))) {
         pa_log("No transport found for profile %d", u->profile);
         return -2;
     }
@@ -403,7 +403,7 @@ static int bt_transport_acquire(struct userdata *u, pa_bool_t start) {
         return 0;
     }
 
-    pa_log_debug("Acquiring transport %s", u->transport);
+    pa_log_debug("Acquiring transport %s for codec %d", u->transport, u->a2dp.mode == A2DP_MODE_MPEG ? 1 : 0);
 
     t = pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
     if (!t) {
@@ -2387,8 +2387,10 @@ static int bt_transport_config_a2dp_sbc(struct userdata *u) {
 
     t = pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
     pa_assert(t);
+    pa_assert(t->codec == 0);
 
     config = (a2dp_sbc_t *) t->config;
+    pa_log_debug("Transport %s config is now %x %x %x %x", t->path, t->config[0], t->config[1], t->config[2], t->config[3]);
 
     u->sample_spec.format = PA_SAMPLE_S16LE;
 
@@ -2507,6 +2509,8 @@ static int bt_transport_config_a2dp_mpeg(struct userdata *u) {
 
     t = pa_bluetooth_discovery_get_transport(u->discovery, u->transport);
     pa_assert(t);
+    pa_assert(t->codec == 1);
+    pa_log_debug("Transport %s config is now %x %x %x %x", t->path, t->config[0], t->config[1], t->config[2], t->config[3]);
 
     config = (a2dp_mpeg_t *) t->config;
 
@@ -2594,7 +2598,7 @@ static int setup_bt(struct userdata *u) {
     }
 
     /* check if profile has a transport */
-    t = pa_bluetooth_device_get_transport(d, u->profile);
+    t = pa_bluetooth_device_get_transport(d, u->profile, (u->a2dp.mode == A2DP_MODE_MPEG) ? 1 : 0);
 
     if (t == NULL) {
         pa_log_warn("Profile has no transport");
