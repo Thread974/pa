@@ -818,11 +818,12 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
 
     dbus_error_init(&err);
 
+    /*
     pa_log_debug("dbus: interface=%s, path=%s, member=%s\n",
             dbus_message_get_interface(m),
             dbus_message_get_path(m),
             dbus_message_get_member(m));
-
+*/
     if (dbus_message_is_signal(m, "org.bluez.Adapter", "DeviceRemoved")) {
         const char *path;
         pa_bluetooth_device *d;
@@ -1589,10 +1590,12 @@ static DBusHandlerResult endpoint_handler(DBusConnection *c, DBusMessage *m, voi
 
     pa_assert(y);
 
+    /*
     pa_log_debug("dbus: interface=%s, path=%s, member=%s\n",
             dbus_message_get_interface(m),
             dbus_message_get_path(m),
             dbus_message_get_member(m));
+	    */
 
     path = dbus_message_get_path(m);
     dbus_error_init(&e);
