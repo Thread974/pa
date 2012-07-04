@@ -1036,15 +1036,23 @@ pa_bluetooth_transport* pa_bluetooth_discovery_get_transport(pa_bluetooth_discov
     return NULL;
 }
 
-const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetooth_device *d, enum profile profile) {
+const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetooth_device *d, enum profile profile, uint8_t codec) {
     pa_bluetooth_transport *t;
     void *state = NULL;
 
     pa_assert(d);
 
+    pa_log_debug("Device %s", d->path);
     while ((t = pa_hashmap_iterate(d->transports, &state, NULL)))
-        if (t->profile == profile)
+        pa_log_debug("Available transport %s: profile %d codec %d", t->path, t->profile, t->codec);
+
+    state = NULL;
+    while ((t = pa_hashmap_iterate(d->transports, &state, NULL))) {
+        if (t->profile == profile && t->codec == codec) {
+            pa_log_debug("Selected %s", t->path);
             return t;
+        }
+    }
 
     return NULL;
 }
