@@ -3506,7 +3506,7 @@ static int setup_bt(struct userdata *u) {
         u->transport = pa_xstrdup(t->path);
         u->a2dp.has_mpeg = t->has_mpeg;
         /* Connect for SBC to start with, switch later if required */
-        u->a2dp.mode = A2DP_MODE_SBC;
+        u->a2dp.mode = t->codec ? A2DP_MODE_MPEG : A2DP_MODE_SBC;
         return bt_transport_open(u);
     }
 
