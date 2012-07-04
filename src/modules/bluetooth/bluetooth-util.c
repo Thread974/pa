@@ -1211,6 +1211,7 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     const char *path, *dev_path = NULL, *uuid = NULL;
     uint8_t *config = NULL;
     int size = 0;
+    uint8_t codec = 0;
     uint8_t *codecs = NULL;
     int i, ncodecs = 0;
     pa_bool_t nrec = FALSE;
@@ -1245,6 +1246,10 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
             if (var != DBUS_TYPE_STRING)
                 goto fail;
             dbus_message_iter_get_basic(&value, &uuid);
+        } else if (strcasecmp(key, "Codec") == 0) {
+            if (var != DBUS_TYPE_BYTE)
+                goto fail;
+            dbus_message_iter_get_basic(&value, &codec);
         } else if (strcasecmp(key, "Device") == 0) {
             if (var != DBUS_TYPE_OBJECT_PATH)
                 goto fail;
@@ -1292,10 +1297,11 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
         if (codecs[i] == A2DP_CODEC_MPEG12)
             t->has_mpeg = TRUE;
     }
+    t->codec = codec;
 
     pa_hashmap_put(d->transports, t->path, t);
 
-    pa_log_debug("Transport %s profile %d available (has_mpeg %d)", t->path, t->profile, t->has_mpeg);
+    pa_log_debug("Transport %s profile %d available (codec %d, has_mpeg %d)", t->path, t->profile, t->codec, t->has_mpeg);
 
     pa_assert_se(r = dbus_message_new_method_return(m));
 
