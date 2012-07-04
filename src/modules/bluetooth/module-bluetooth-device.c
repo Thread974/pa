@@ -1841,10 +1841,12 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
 
     dbus_error_init(&err);
 
+    /*
     pa_log_debug("dbus: interface=%s, path=%s, member=%s\n",
                  dbus_message_get_interface(m),
                  dbus_message_get_path(m),
                  dbus_message_get_member(m));
+		 */
 
     if (!dbus_message_has_path(m, u->path) && !dbus_message_has_path(m, u->transport))
         goto fail;
