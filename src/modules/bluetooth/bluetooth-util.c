@@ -678,8 +678,7 @@ static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
 static void list_adapters_reply(DBusPendingCall *pending, void *userdata) {
     DBusError e;
     DBusMessage *r;
-    char **paths = NULL;
-    int num = -1;
+    DBusMessageIter arg_i, entry_i;
     pa_dbus_pending *p;
     pa_bluetooth_discovery *y;
 
@@ -698,24 +697,69 @@ static void list_adapters_reply(DBusPendingCall *pending, void *userdata) {
     }
 
     if (dbus_message_get_type(r) == DBUS_MESSAGE_TYPE_ERROR) {
-        pa_log("org.bluez.Manager.ListAdapters() failed: %s: %s", dbus_message_get_error_name(r), pa_dbus_get_error_message(r));
+        pa_log("org.bluez.Manager.GetProperties() failed: %s: %s", dbus_message_get_error_name(r), pa_dbus_get_error_message(r));
         goto finish;
     }
 
-    if (!dbus_message_get_args(r, &e, DBUS_TYPE_ARRAY, DBUS_TYPE_OBJECT_PATH, &paths, &num, DBUS_TYPE_INVALID)) {
-        pa_log("org.bluez.Manager.ListAdapters returned an error: %s", e.message);
-        dbus_error_free(&e);
-    } else {
-        int i;
+    if (!dbus_message_iter_init(r, &arg_i)) {
+        pa_log("GetProperties reply has no arguments.");
+        goto finish;
+    }
 
-        for (i = 0; i < num; ++i)
-            found_adapter(y, paths[i]);
+    if (dbus_message_iter_get_arg_type(&arg_i) != DBUS_TYPE_ARRAY) {
+        pa_log("GetProperties argument is not an array.");
+        goto finish;
+    }
+
+    dbus_message_iter_recurse(&arg_i, &entry_i);
+    while (dbus_message_iter_get_arg_type(&entry_i) == DBUS_TYPE_DICT_ENTRY) {
+        DBusMessageIter dict_i, variant_i;
+        const char *key;
+
+        dbus_message_iter_recurse(&entry_i, &dict_i);
+        if (dbus_message_iter_get_arg_type(&dict_i) != DBUS_TYPE_STRING) {
+            pa_log("GetProperties entry is not an string.");
+            goto finish;
+        }
+
+        dbus_message_iter_get_basic(&dict_i, &key);
+        if (!pa_streq(key, "Adapters")) {
+            dbus_message_iter_next(&entry_i);
+            continue;
+        }
+
+        if (!dbus_message_iter_next(&dict_i))  {
+            pa_log("Property value missing");
+            goto finish;
+        }
+
+        if (dbus_message_iter_get_arg_type(&dict_i) != DBUS_TYPE_VARIANT) {
+            pa_log("Property value not a variant.");
+            goto finish;
+        }
+
+        dbus_message_iter_recurse(&dict_i, &variant_i);
+        switch (dbus_message_iter_get_arg_type(&variant_i)) {
+
+            case DBUS_TYPE_ARRAY: {
+
+                DBusMessageIter value_i;
+                dbus_message_iter_recurse(&variant_i, &value_i);
+
+                while (dbus_message_iter_get_arg_type(&value_i) == DBUS_TYPE_OBJECT_PATH) {
+                    const char *path;
+
+                    dbus_message_iter_get_basic(&value_i, &path);
+                    found_adapter(y, path);
+                    dbus_message_iter_next(&value_i);
+                }
+            }
+        }
+
+        dbus_message_iter_next(&entry_i);
     }
 
 finish:
-    if (paths)
-        dbus_free_string_array(paths);
-
     dbus_message_unref(r);
 
     PA_LLIST_REMOVE(pa_dbus_pending, y->pending, p);
@@ -726,7 +770,7 @@ static void list_adapters(pa_bluetooth_discovery *y) {
     DBusMessage *m;
     pa_assert(y);
 
-    pa_assert_se(m = dbus_message_new_method_call("org.bluez", "/", "org.bluez.Manager", "ListAdapters"));
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", "/", "org.bluez.Manager", "GetProperties"));
     send_and_add_to_pending(y, m, list_adapters_reply, NULL);
 }
 

@@ -1740,8 +1740,6 @@ static void thread_func(void *userdata) {
             pa_log_debug("IO thread shutdown requested, stopping cleanly");
             if (u->transport)
                 bt_transport_release(u);
-            else
-                stop_stream_fd(u);
             goto finish;
         }
 
