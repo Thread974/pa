@@ -1364,12 +1364,9 @@ static int source_set_port_cb(pa_source *s, pa_device_port *p) {
     data = PA_DEVICE_PORT_DATA(p);
 
     pa_assert_se(u->mixer_path = data->path);
-    pa_alsa_path_select(u->mixer_path, u->mixer_handle);
+    pa_alsa_path_select(u->mixer_path, data->setting, u->mixer_handle, s->muted);
 
     mixer_volume_init(u);
-
-    if (data->setting)
-        pa_alsa_setting_select(data->setting, u->mixer_handle);
 
     if (s->set_mute)
         s->set_mute(s);
@@ -1642,10 +1639,7 @@ static int setup_mixer(struct userdata *u, pa_bool_t ignore_dB) {
         data = PA_DEVICE_PORT_DATA(u->source->active_port);
         u->mixer_path = data->path;
 
-        pa_alsa_path_select(data->path, u->mixer_handle);
-
-        if (data->setting)
-            pa_alsa_setting_select(data->setting, u->mixer_handle);
+        pa_alsa_path_select(data->path, data->setting, u->mixer_handle, u->source->muted);
 
     } else {
 
@@ -1655,10 +1649,7 @@ static int setup_mixer(struct userdata *u, pa_bool_t ignore_dB) {
         if (u->mixer_path) {
             /* Hmm, we have only a single path, then let's activate it */
 
-            pa_alsa_path_select(u->mixer_path, u->mixer_handle);
-
-            if (u->mixer_path->settings)
-                pa_alsa_setting_select(u->mixer_path->settings, u->mixer_handle);
+            pa_alsa_path_select(u->mixer_path, u->mixer_path->settings, u->mixer_handle, u->source->muted);
         } else
             return 0;
     }
