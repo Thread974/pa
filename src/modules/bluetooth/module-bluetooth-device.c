@@ -315,6 +315,9 @@ static void a2dp_set_bitpool(struct userdata *u, uint8_t bitpool)
         ((u->write_link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
         / a2dp->frame_length * a2dp->codesize);
 
+    pa_log_debug("%s frame_length %d codesize %d", __FUNCTION__, (int)a2dp->frame_length, (int)a2dp->codesize);
+    pa_log_debug("%s read_link_mtu %d, read_block_size %d, write_link_mtu %d, write_block_size %d", __FUNCTION__, (int)u->read_link_mtu, (int)u->read_block_size, (int)u->write_link_mtu, (int)u->write_block_size);
+
     pa_sink_set_max_request_within_thread(u->sink, u->write_block_size);
     pa_sink_set_fixed_latency_within_thread(u->sink,
             FIXED_LATENCY_PLAYBACK_A2DP + pa_bytes_to_usec(u->write_block_size, &u->sample_spec));
@@ -417,7 +420,7 @@ static int bt_transport_acquire(struct userdata *u, pa_bool_t start) {
         return -1;
 
     u->accesstype = pa_xstrdup(accesstype);
-    pa_log_info("Transport %s acquired: fd %d", u->transport, u->stream_fd);
+    pa_log_info("Transport %s acquired: imtu: %d, omtu: %d, fd %d", u->transport, u->read_link_mtu, u->write_link_mtu, u->stream_fd);
 
     if (!start)
         return 0;
@@ -773,7 +776,7 @@ static int hsp_process_push(struct userdata *u) {
 
         pa_source_post(u->source, &memchunk);
 
-        ret = l;
+        ret = 1;
         break;
     }
 
@@ -1611,7 +1614,7 @@ static int a2dp_process_push(struct userdata *u) {
             pa_log_debug("MPEG: frame kept for later");
         }
 
-        ret = l;
+        ret = 1;
         break;
     }
 
@@ -2477,6 +2480,9 @@ static int bt_transport_config_a2dp_sbc(struct userdata *u) {
     u->write_block_size =
         ((u->write_link_mtu - sizeof(struct rtp_header) - sizeof(struct sbc_rtp_payload))
         / a2dp->frame_length * a2dp->codesize);
+
+    pa_log_debug("%s frame_length %d codesize %d", __FUNCTION__, (int)a2dp->frame_length, (int)a2dp->codesize);
+    pa_log_debug("%s read_link_mtu %d, read_block_size %d, write_link_mtu %d, write_block_size %d", __FUNCTION__, (int)u->read_link_mtu, (int)u->read_block_size, (int)u->write_link_mtu, (int)u->write_block_size);
 
     pa_log_info("SBC parameters:\n\tallocation=%u\n\tsubbands=%u\n\tblocks=%u\n\tbitpool=%u\n",
                 a2dp->sbc.allocation, a2dp->sbc.subbands, a2dp->sbc.blocks, a2dp->sbc.bitpool);
