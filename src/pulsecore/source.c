@@ -1109,11 +1109,23 @@ pa_source *pa_source_get_master(pa_source *s) {
 
 /* Called from main context */
 pa_bool_t pa_source_is_passthrough(pa_source *s) {
+    uint32_t idx;
+    pa_source_output *o;
 
     pa_source_assert_ref(s);
+    pa_assert(PA_SOURCE_IS_LINKED(s->state));
 
-    /* NB Currently only monitor sources support passthrough mode */
-    return (s->monitor_of && pa_sink_is_passthrough(s->monitor_of));
+    /* Monitor sources support passthrough mode */
+    if (s->monitor_of && pa_sink_is_passthrough(s->monitor_of))
+        return TRUE;
+
+    /* A passthrough source only have passthrough outputs */
+    PA_IDXSET_FOREACH(o, s->outputs, idx) {
+        if (!pa_source_output_is_passthrough(o))
+            return FALSE;
+    }
+
+    return TRUE;
 }
 
 /* Called from main context */
