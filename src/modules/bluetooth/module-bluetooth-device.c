@@ -105,6 +105,8 @@ static const char* const valid_modargs[] = {
 
 #define A2DP_SOURCE_ENDPOINT "/MediaEndpoint/A2DPSource"
 #define A2DP_SOURCE_ENDPOINT_MPEG "/MediaEndpoint/A2DPSourceMpeg"
+#define A2DP_SINK_ENDPOINT "/MediaEndpoint/A2DPSink"
+#define A2DP_SINK_ENDPOINT_MPEG "/MediaEndpoint/A2DPSinkMpeg"
 
 typedef enum {
     A2DP_MODE_SBC,
@@ -420,7 +422,7 @@ static int bt_transport_acquire(struct userdata *u, pa_bool_t start) {
         return -1;
 
     u->accesstype = pa_xstrdup(accesstype);
-    pa_log_info("Transport %s acquired: imtu: %d, omtu: %d, fd %d", u->transport, u->read_link_mtu, u->write_link_mtu, u->stream_fd);
+    pa_log_info("Transport %s acquired: profile %d, imtu: %d, omtu: %d, fd %d", u->transport, u->profile, u->read_link_mtu, u->write_link_mtu, u->stream_fd);
 
     if (!start)
         return 0;
@@ -437,7 +439,6 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
     int r;
 
     pa_assert(u->sink == PA_SINK(o));
-    pa_assert(u->transport);
 
     switch (code) {
 
@@ -551,15 +552,51 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 }
 
 /* Run from IO thread */
-static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t offset, pa_memchunk *chunk) {
-    struct userdata *u = PA_SOURCE(o)->userdata;
+static int source_process_msg(pa_msgobject *obj, int code, void *data, int64_t offset, pa_memchunk *chunk) {
+    struct userdata *u = PA_SOURCE(obj)->userdata;
     pa_bool_t failed = FALSE;
     int r;
 
-    pa_assert(u->source == PA_SOURCE(o));
-    pa_assert(u->transport);
+    pa_assert(u->source == PA_SOURCE(obj));
 
     switch (code) {
+        case PA_SOURCE_MESSAGE_ADD_OUTPUT: {
+            pa_source_output *o = PA_SOURCE_OUTPUT(data);
+            a2dp_mode_t mode;
+
+            pa_log_debug("PA_SOURCE_MESSAGE_ADD_OUTPUT o %p encoding %d:%s passthrough %d, has_mpeg %d", o, o->format->encoding,
+                        (o->format->encoding == PA_ENCODING_PCM) ? "PCM" : (o->format->encoding == PA_ENCODING_MPEG_IEC61937) ? "IEC" : "Other",
+                        pa_source_is_passthrough(u->source),
+                        u->a2dp.has_mpeg);
+
+            if (u->profile == PROFILE_A2DP_SOURCE) {
+                if (pa_source_is_passthrough(u->source) && u->a2dp.has_mpeg)
+                    mode = A2DP_MODE_MPEG;
+                else
+                    mode = A2DP_MODE_SBC;
+
+                if (PA_UNLIKELY(mode != u->a2dp.mode)) {
+                    if (u->transport) {
+                        const char *endpoint = A2DP_SINK_ENDPOINT;
+                        bt_transport_release(u);
+
+                        u->a2dp.mode = mode;
+                        pa_log_debug("DBUS Switch to mode %s",  u->a2dp.mode == A2DP_MODE_SBC ? "SBC" : "MPEG");
+
+                        if (u->a2dp.mode == A2DP_MODE_MPEG)
+                          endpoint = A2DP_SINK_ENDPOINT_MPEG;
+
+                        if (bt_transport_reconfigure(u, endpoint) < 0)
+                          failed = TRUE;
+                    } else {
+                        pa_log_debug("No transport available");
+                        failed = TRUE;
+                    }
+                }
+            }
+
+            break;
+        }
 
         case PA_SOURCE_MESSAGE_SET_STATE:
 
@@ -613,7 +650,7 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
 
     }
 
-    r = pa_source_process_msg(o, code, data, offset, chunk);
+    r = pa_source_process_msg(obj, code, data, offset, chunk);
 
     return (r < 0 || !failed) ? r : -1;
 }
@@ -2204,7 +2241,7 @@ static pa_idxset* sink_get_formats(pa_sink *s) {
 
     u = (struct userdata *) s->userdata;
 
-    if (u->profile == PROFILE_A2DP && u->a2dp.has_mpeg) {
+    if (u->profile == PROFILE_A2DP_SOURCE && u->a2dp.has_mpeg) {
         f = pa_format_info_new();
         f->encoding = PA_ENCODING_MPEG_IEC61937;
         /* FIXME: Populate supported rates, layers, ... */
@@ -2610,11 +2647,12 @@ static int setup_bt(struct userdata *u) {
 
     u->transport = pa_xstrdup(t->path);
 
-    if (u->profile == PROFILE_A2DP) {
+    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE) {
         /* Connect for SBC to start with, switch later if required */
-        u->a2dp.has_mpeg = (t->codec == 1);
+        u->a2dp.has_mpeg = t->has_mpeg;
         u->a2dp.mode = (t->codec == 1) ? A2DP_MODE_MPEG : A2DP_MODE_SBC;
     }
+    pa_log_debug("Connected to transport %s for profile %d, codec %d, has_mpeg %d", t->path, u->profile, t->codec, t->has_mpeg);
 
     if (bt_transport_acquire(u, FALSE) < 0)
         return -1;
