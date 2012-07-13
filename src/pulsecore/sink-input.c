@@ -259,6 +259,7 @@ int pa_sink_input_new(
     if (data->origin_sink && (data->origin_sink->flags & PA_SINK_SHARE_VOLUME_WITH_MASTER))
         data->volume_writable = FALSE;
 
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     if (!data->req_formats) {
         /* From this point on, we want to work only with formats, and get back
          * to using the sample spec and channel map after all decisions w.r.t.
@@ -270,9 +271,11 @@ int pa_sink_input_new(
         pa_sink_input_new_data_set_formats(data, tmp);
     }
 
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     if ((r = pa_hook_fire(&core->hooks[PA_CORE_HOOK_SINK_INPUT_NEW], data)) < 0)
         return r;
 
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     pa_return_val_if_fail(!data->driver || pa_utf8_valid(data->driver), -PA_ERR_INVALID);
 
     if (!data->sink) {
@@ -282,6 +285,7 @@ int pa_sink_input_new(
     }
     /* Routing's done, we have a sink. Now let's fix the format and set up the
      * sample spec */
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
 
     /* If something didn't pick a format for us, pick the top-most format since
      * we assume this is sorted in priority order */
@@ -289,6 +293,7 @@ int pa_sink_input_new(
         data->format = pa_format_info_copy(pa_idxset_first(data->nego_formats, NULL));
 
     pa_return_val_if_fail(data->format, -PA_ERR_NOTSUPPORTED);
+    pa_log_debug("passthrough sink format encoding is %d", data->format->encoding);
 
     /* Now populate the sample spec and format according to the final
      * format that we've negotiated */
@@ -512,7 +517,8 @@ int pa_sink_input_new(
     pa_xfree(memblockq_name);
 
     pt = pa_proplist_to_string_sep(i->proplist, "\n    ");
-    pa_log_info("Created input %u \"%s\" on %s with sample spec %s and channel map %s\n    %s",
+    pa_log_info("Created %sinput %u \"%s\" on %s with sample spec %s and channel map %s\n    %s",
+                i->flags & PA_SINK_INPUT_PASSTHROUGH ? "passthough ":"pcm ",
                 i->index,
                 pa_strnull(pa_proplist_gets(i->proplist, PA_PROP_MEDIA_NAME)),
                 i->sink->name,
