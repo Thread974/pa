@@ -165,10 +165,12 @@ pa_bool_t pa_source_output_new_data_set_formats(pa_source_output_new_data *data,
 
     data->req_formats = formats;
 
+    pa_log_debug("A format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     if (data->source) {
         /* Trigger format negotiation */
         return pa_source_output_new_data_set_source(data, data->source, data->save_source);
     }
+    pa_log_debug("B format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
 
     return TRUE;
 }
@@ -238,6 +240,7 @@ int pa_source_output_new(
     if (data->destination_source && (data->destination_source->flags & PA_SOURCE_SHARE_VOLUME_WITH_MASTER))
         data->volume_writable = FALSE;
 
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     if (!data->req_formats) {
         /* From this point on, we want to work only with formats, and get back
          * to using the sample spec and channel map after all decisions w.r.t.
@@ -249,9 +252,11 @@ int pa_source_output_new(
         pa_source_output_new_data_set_formats(data, tmp);
     }
 
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     if ((r = pa_hook_fire(&core->hooks[PA_CORE_HOOK_SOURCE_OUTPUT_NEW], data)) < 0)
         return r;
 
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
     pa_return_val_if_fail(!data->driver || pa_utf8_valid(data->driver), -PA_ERR_INVALID);
 
     if (!data->source) {
@@ -259,9 +264,9 @@ int pa_source_output_new(
         pa_return_val_if_fail(source, -PA_ERR_NOENTITY);
         pa_source_output_new_data_set_source(data, source, FALSE);
     }
-
     /* Routing's done, we have a source. Now let's fix the format and set up the
      * sample spec */
+    pa_log_debug("format %p nego_formats %p req_formats %p", data->format, data->nego_formats, data->req_formats);
 
     /* If something didn't pick a format for us, pick the top-most format since
      * we assume this is sorted in priority order */
@@ -269,6 +274,7 @@ int pa_source_output_new(
         data->format = pa_format_info_copy(pa_idxset_first(data->nego_formats, NULL));
 
     pa_return_val_if_fail(data->format, -PA_ERR_NOTSUPPORTED);
+    pa_log_debug("passthrough source format encoding is %d", data->format->encoding);
 
     /* Now populate the sample spec and format according to the final
      * format that we've negotiated */
@@ -301,6 +307,7 @@ int pa_source_output_new(
         pa_cvolume_reset(&data->volume, data->sample_spec.channels);
         data->volume_is_absolute = TRUE;
         data->save_volume = FALSE;
+	pa_log_debug("passthrough source format encoding is %d", data->format->encoding);
     }
 
     if (!data->volume_is_set) {
@@ -472,14 +479,16 @@ int pa_source_output_new(
         pa_assert_se(pa_idxset_put(o->direct_on_input->direct_outputs, o, NULL) == 0);
 
     pt = pa_proplist_to_string_sep(o->proplist, "\n    ");
-    pa_log_info("Created output %u \"%s\" on %s with sample spec %s and channel map %s\n    %s",
-                o->index,
+    pa_log_info("Created %soutput %u (%p) \"%s\" on %s with sample spec %s and channel map %s\n    %s",
+                o->flags & PA_SOURCE_OUTPUT_PASSTHROUGH ? "passthrough ":"pcm ",
+                o->index, o,
                 pa_strnull(pa_proplist_gets(o->proplist, PA_PROP_MEDIA_NAME)),
                 o->source->name,
                 pa_sample_spec_snprint(st, sizeof(st), &o->sample_spec),
                 pa_channel_map_snprint(cm, sizeof(cm), &o->channel_map),
                 pt);
     pa_xfree(pt);
+    pa_log_info("flags %d format %p is_pcm %d encoding %d", o->flags, o->format, pa_format_info_is_pcm(o->format), o->format->encoding);
 
     /* Don't forget to call pa_source_output_put! */
 
@@ -635,6 +644,7 @@ void pa_source_output_put(pa_source_output *o) {
     /* The following fields must be initialized properly */
     pa_assert(o->push);
     pa_assert(o->kill);
+    pa_log_info("%s1 flags %d format %p is_pcm %d encoding %d", __FUNCTION__, o->flags, o->format, pa_format_info_is_pcm(o->format), o->format->encoding);
 
     state = o->flags & PA_SOURCE_OUTPUT_START_CORKED ? PA_SOURCE_OUTPUT_CORKED : PA_SOURCE_OUTPUT_RUNNING;
 
@@ -652,6 +662,8 @@ void pa_source_output_put(pa_source_output *o) {
 
         set_real_ratio(o, &o->volume);
     }
+
+    pa_log_info("%s2 flags %d format %p is_pcm %d encoding %d", __FUNCTION__, o->flags, o->format, pa_format_info_is_pcm(o->format), o->format->encoding);
 
     if (pa_source_output_is_passthrough(o))
         pa_source_enter_passthrough(o->source);
