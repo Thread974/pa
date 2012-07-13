@@ -106,6 +106,8 @@ static const char* const valid_modargs[] = {
 
 #define A2DP_SOURCE_ENDPOINT "/MediaEndpoint/A2DPSource"
 #define A2DP_SOURCE_ENDPOINT_MPEG "/MediaEndpoint/A2DPSourceMpeg"
+#define A2DP_SINK_ENDPOINT "/MediaEndpoint/A2DPSink"
+#define A2DP_SINK_ENDPOINT_MPEG "/MediaEndpoint/A2DPSinkMpeg"
 
 typedef enum {
     A2DP_MODE_SBC,
@@ -557,9 +559,42 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
     int r;
 
     pa_assert(u->source == PA_SOURCE(o));
-    pa_assert(u->transport);
 
     switch (code) {
+        case PA_SOURCE_MESSAGE_ADD_OUTPUT: {
+            a2dp_mode_t mode;
+
+            if (u->profile == PROFILE_A2DP_SOURCE) {
+                if (pa_source_is_passthrough(u->source) && u->a2dp.has_mpeg)
+                    mode = A2DP_MODE_MPEG;
+                else
+                    mode = A2DP_MODE_SBC;
+
+                if (PA_UNLIKELY(mode != u->a2dp.mode)) {
+                    if (u->transport) {
+                        const char *endpoint = A2DP_SINK_ENDPOINT;
+                        bt_transport_release(u);
+
+                        u->a2dp.mode = mode;
+                        pa_log_debug("DBUS Switch to mode %s",  u->a2dp.mode == A2DP_MODE_SBC ? "SBC" : "MPEG");
+
+                        if (u->a2dp.mode == A2DP_MODE_MPEG)
+                          endpoint = A2DP_SINK_ENDPOINT_MPEG;
+
+                        if(bt_transport_reconfigure_cb(0, u) < 0) {
+                            if (bt_transport_reconfigure(u, endpoint) < 0)
+                                failed = TRUE;
+                        }
+                    } else {
+                        u->a2dp.mode = mode;
+                        if(bt_transport_reconfigure_cb(0, u) < 0)
+                            failed = TRUE;
+                    }
+                }
+            }
+
+            break;
+        }
 
         case PA_SOURCE_MESSAGE_SET_STATE:
 
@@ -2204,7 +2239,7 @@ static pa_idxset* sink_get_formats(pa_sink *s) {
 
     u = (struct userdata *) s->userdata;
 
-    if (u->profile == PROFILE_A2DP && u->a2dp.has_mpeg) {
+    if (u->profile == PROFILE_A2DP_SOURCE && u->a2dp.has_mpeg) {
         f = pa_format_info_new();
         f->encoding = PA_ENCODING_MPEG_IEC61937;
         /* FIXME: Populate supported rates, layers, ... */
@@ -2607,11 +2642,12 @@ static int setup_bt(struct userdata *u) {
 
     u->transport = pa_xstrdup(t->path);
 
-    if (u->profile == PROFILE_A2DP) {
+    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE) {
         /* Connect for SBC to start with, switch later if required */
-        u->a2dp.has_mpeg = (t->codec == 1);
+        u->a2dp.has_mpeg = t->has_mpeg;
         u->a2dp.mode = (t->codec == 1) ? A2DP_MODE_MPEG : A2DP_MODE_SBC;
     }
+    pa_log_debug("Connected to transport %s for profile %d, codec %d, has_mpeg %d", t->path, u->profile, t->codec, t->has_mpeg);
 
     if (bt_transport_acquire(u, FALSE) < 0)
         return -1;
