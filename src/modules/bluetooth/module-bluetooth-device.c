@@ -105,6 +105,8 @@ static const char* const valid_modargs[] = {
 
 #define A2DP_SOURCE_ENDPOINT "/MediaEndpoint/A2DPSource"
 #define A2DP_SOURCE_ENDPOINT_MPEG "/MediaEndpoint/A2DPSourceMpeg"
+#define A2DP_SINK_ENDPOINT "/MediaEndpoint/A2DPSink"
+#define A2DP_SINK_ENDPOINT_MPEG "/MediaEndpoint/A2DPSinkMpeg"
 
 typedef enum {
     A2DP_MODE_SBC,
@@ -420,7 +422,7 @@ static int bt_transport_acquire(struct userdata *u, pa_bool_t start) {
         return -1;
 
     u->accesstype = pa_xstrdup(accesstype);
-    pa_log_info("Transport %s acquired: imtu: %d, omtu: %d, fd %d", u->transport, u->read_link_mtu, u->write_link_mtu, u->stream_fd);
+    pa_log_info("Transport %s acquired: profile %d, imtu: %d, omtu: %d, fd %d", u->transport, u->profile, u->read_link_mtu, u->write_link_mtu, u->stream_fd);
 
     if (!start)
         return 0;
@@ -437,7 +439,6 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
     int r;
 
     pa_assert(u->sink == PA_SINK(o));
-    pa_assert(u->transport);
 
     switch (code) {
 
@@ -549,15 +550,49 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 }
 
 /* Run from IO thread */
-static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t offset, pa_memchunk *chunk) {
-    struct userdata *u = PA_SOURCE(o)->userdata;
+static int source_process_msg(pa_msgobject *obj, int code, void *data, int64_t offset, pa_memchunk *chunk) {
+    struct userdata *u = PA_SOURCE(obj)->userdata;
     pa_bool_t failed = FALSE;
     int r;
 
-    pa_assert(u->source == PA_SOURCE(o));
-    pa_assert(u->transport);
+    pa_assert(u->source == PA_SOURCE(obj));
 
     switch (code) {
+        case PA_SOURCE_MESSAGE_ADD_OUTPUT: {
+            pa_source_output *o = PA_SOURCE_OUTPUT(data);
+            a2dp_mode_t mode;
+
+            pa_log_debug("PA_SOURCE_MESSAGE_ADD_OUTPUT o %p encoding %d:%s passthrough %d, has_mpeg %d", o, o->format->encoding,
+                        (o->format->encoding == PA_ENCODING_PCM) ? "PCM" : (o->format->encoding == PA_ENCODING_MPEG_IEC61937) ? "IEC" : "Other",
+                        pa_source_is_passthrough(u->source),
+                        u->a2dp.has_mpeg);
+
+            if (u->profile == PROFILE_A2DP) {
+                if (pa_source_is_passthrough(u->source) && u->a2dp.has_mpeg)
+                    mode = A2DP_MODE_MPEG;
+                else
+                    mode = A2DP_MODE_SBC;
+
+                if (PA_UNLIKELY(mode != u->a2dp.mode)) {
+                    if (u->transport) {
+                        const char *endpoint = A2DP_SINK_ENDPOINT;
+                        bt_transport_release(u);
+
+                        u->a2dp.mode = mode;
+                        pa_log_debug("DBUS Switch to mode %s",  u->a2dp.mode == A2DP_MODE_SBC ? "SBC" : "MPEG");
+
+                        if (u->a2dp.mode == A2DP_MODE_MPEG)
+                          endpoint = A2DP_SINK_ENDPOINT_MPEG;
+
+                        if (bt_transport_reconfigure(u, endpoint) < 0)
+                          failed = TRUE;
+                    } else
+                        failed = TRUE;
+                }
+            }
+
+            break;
+        }
 
         case PA_SOURCE_MESSAGE_SET_STATE:
 
@@ -611,7 +646,7 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
 
     }
 
-    r = pa_source_process_msg(o, code, data, offset, chunk);
+    r = pa_source_process_msg(obj, code, data, offset, chunk);
 
     return (r < 0 || !failed) ? r : -1;
 }
@@ -669,9 +704,11 @@ static int hsp_process_render(struct userdata *u) {
                 /* Retry right away if we got interrupted */
                 continue;
 
-            else if (errno == EAGAIN)
+            else if (errno == EAGAIN) {
+                pa_log_debug("EAGAIN in %s", __FUNCTION__);
                 /* Hmm, apparently the socket was not writable, give up for now */
                 break;
+            }
 
             pa_log_error("Failed to write data to SCO socket: %s", pa_cstrerror(errno));
             ret = -1;
@@ -743,9 +780,11 @@ static int hsp_process_push(struct userdata *u) {
                 /* Retry right away if we got interrupted */
                 continue;
 
-            else if (l < 0 && errno == EAGAIN)
+            else if (l < 0 && errno == EAGAIN) {
+                pa_log_debug("EAGAIN in %s", __FUNCTION__);
                 /* Hmm, apparently the socket was not readable, give up for now. */
                 break;
+            }
 
             pa_log_error("Failed to read data from SCO socket: %s", l < 0 ? pa_cstrerror(errno) : "EOF");
             ret = -1;
@@ -902,9 +941,11 @@ static int a2dp_process_render(struct userdata *u) {
                 /* Retry right away if we got interrupted */
                 continue;
 
-            else if (errno == EAGAIN)
+            else if (errno == EAGAIN) {
+                pa_log_debug("EAGAIN in %s", __FUNCTION__);
                 /* Hmm, apparently the socket was not writable, give up for now */
                 break;
+            }
 
             pa_log_error("Failed to write data to socket: %s", pa_cstrerror(errno));
             ret = -1;
@@ -1266,9 +1307,12 @@ static int a2dp_passthrough_process_render(struct userdata *u) {
                     /* Retry right away if we got interrupted */
                     continue;
 
-                else if (errno == EAGAIN)
+                else if (errno == EAGAIN) {
+                    pa_log_debug("EAGAIN in %s", __FUNCTION__);
                     /* Hmm, apparently the socket was not writable, give up for now */
                     break;
+                }
+
 
                 pa_log_error("Failed to write data to socket: %s", pa_cstrerror(errno));
                 ret  = -1;
@@ -1666,6 +1710,9 @@ static void thread_func(void *userdata) {
         int ret;
         pa_bool_t disable_timer = TRUE;
 
+        if (u->profile == PROFILE_A2DP_SOURCE && u->a2dp.mode == A2DP_MODE_MPEG)
+            pa_log_debug("IO Thread %p running", u->thread);
+
         pollfd = u->rtpoll_item ? pa_rtpoll_item_get_pollfd(u->rtpoll_item, NULL) : NULL;
 
         if (u->source && PA_SOURCE_IS_LINKED(u->source->thread_info.state)) {
@@ -1675,6 +1722,9 @@ static void thread_func(void *userdata) {
 
             if (u->write_index == 0 && u->read_index <= 0)
                 do_write = 2;
+
+            if (u->profile == PROFILE_A2DP_SOURCE && u->a2dp.mode == A2DP_MODE_MPEG)
+                pa_log_debug("pollfd %p revent %d", pollfd, pollfd?pollfd->revents:0);
 
             if (pollfd && (pollfd->revents & POLLIN)) {
                 int n_read;
@@ -2213,7 +2263,7 @@ static pa_idxset* source_get_formats(pa_source *s) {
 
     u = (struct userdata *) s->userdata;
 
-    if (u->profile == PROFILE_A2DP && u->a2dp.has_mpeg) {
+    if (u->profile == PROFILE_A2DP_SOURCE && u->a2dp.has_mpeg) {
         f = pa_format_info_new();
         f->encoding = PA_ENCODING_MPEG_IEC61937;
         /* FIXME: Populate supported rates, layers, ... */
@@ -2596,9 +2646,10 @@ static int setup_bt(struct userdata *u) {
 
     if (u->profile == PROFILE_A2DP) {
         /* Connect for SBC to start with, switch later if required */
-        u->a2dp.has_mpeg = (t->codec == 1);
+        u->a2dp.has_mpeg = t->has_mpeg;
         u->a2dp.mode = (t->codec == 1) ? A2DP_MODE_MPEG : A2DP_MODE_SBC;
     }
+    pa_log_debug("Connected to transport %s for profile %d, codec %d, has_mpeg %d", t->path, u->profile, t->codec, t->has_mpeg);
 
     if (bt_transport_acquire(u, FALSE) < 0)
         return -1;
