@@ -1025,9 +1025,9 @@ const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetoo
 
     pa_assert(d);
 
-    pa_log_debug("Device %s", d->path);
+    pa_log_debug("Requesting transport for device %s profile %d codec %d", d->path, profile, codec);
     while ((t = pa_hashmap_iterate(d->transports, &state, NULL)))
-        pa_log_debug("Available transport %s: profile %d codec %d", t->path, t->profile, t->codec);
+        pa_log_debug("Available transport %s: profile %d codec %d has_mpeg %d", t->path, t->profile, t->codec, t->has_mpeg);
 
     state = NULL;
     while ((t = pa_hashmap_iterate(d->transports, &state, NULL))) {
