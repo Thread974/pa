@@ -477,8 +477,10 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 
                         if (bt_transport_reconfigure(u, endpoint) < 0)
                           failed = TRUE;
-                    } else
+                    } else {
+                        pa_log_debug("No transport available");
                         failed = TRUE;
+                    }
                 }
             }
 
@@ -567,7 +569,7 @@ static int source_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
                         pa_source_is_passthrough(u->source),
                         u->a2dp.has_mpeg);
 
-            if (u->profile == PROFILE_A2DP) {
+            if (u->profile == PROFILE_A2DP_SOURCE) {
                 if (pa_source_is_passthrough(u->source) && u->a2dp.has_mpeg)
                     mode = A2DP_MODE_MPEG;
                 else
@@ -586,8 +588,10 @@ static int source_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
 
                         if (bt_transport_reconfigure(u, endpoint) < 0)
                           failed = TRUE;
-                    } else
+                    } else {
+                        pa_log_debug("No transport available");
                         failed = TRUE;
+                    }
                 }
             }
 
@@ -643,7 +647,6 @@ static int source_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
 
             return 0;
         }
-
     }
 
     r = pa_source_process_msg(obj, code, data, offset, chunk);
@@ -2644,7 +2647,7 @@ static int setup_bt(struct userdata *u) {
 
     u->transport = pa_xstrdup(t->path);
 
-    if (u->profile == PROFILE_A2DP) {
+    if (u->profile == PROFILE_A2DP || u->profile == PROFILE_A2DP_SOURCE) {
         /* Connect for SBC to start with, switch later if required */
         u->a2dp.has_mpeg = t->has_mpeg;
         u->a2dp.mode = (t->codec == 1) ? A2DP_MODE_MPEG : A2DP_MODE_SBC;

@@ -1122,7 +1122,7 @@ pa_bool_t pa_source_is_passthrough(pa_source *s) {
     /* A passthrough source only have passthrough outputs */
     PA_IDXSET_FOREACH(o, s->outputs, idx) {
         pa_log_debug("%s o %p o->flags %d is_passthrough %d", __FUNCTION__, o, o->flags, o->flags & PA_SOURCE_OUTPUT_PASSTHROUGH);
-        if (o->monitor && !pa_source_output_is_passthrough(o))
+        if (!pa_source_output_is_passthrough(o))
             return FALSE;
     }
 
@@ -1133,6 +1133,8 @@ pa_bool_t pa_source_is_passthrough(pa_source *s) {
 /* Called from main context */
 void pa_source_enter_passthrough(pa_source *s) {
     pa_cvolume volume;
+
+    pa_log_debug("%s s %p", __FUNCTION__, s);
 
     /* set the volume to NORM */
     s->saved_volume = *pa_source_get_volume(s, TRUE);
