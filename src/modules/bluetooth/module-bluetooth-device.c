@@ -1081,7 +1081,7 @@ static void thread_func(void *userdata) {
                         pollfd->revents & POLLHUP ? "POLLHUP " :"",
                         pollfd->revents & POLLPRI ? "POLLPRI " :"",
                         pollfd->revents & POLLNVAL ? "POLLNVAL " :"");
-            goto fail;
+            bt_transport_release(u);
         }
     }
 
