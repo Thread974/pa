@@ -588,11 +588,15 @@ static int source_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
                         if (u->a2dp.mode == A2DP_MODE_MPEG)
                           endpoint = A2DP_SINK_ENDPOINT_MPEG;
 
-                        if (bt_transport_reconfigure(u, endpoint) < 0)
-                          failed = TRUE;
+                        if(bt_transport_reconfigure_cb(0, u) < 0) {
+                            if (bt_transport_reconfigure(u, endpoint) < 0)
+                                failed = TRUE;
+                        }
                     } else {
                         pa_log_debug("No transport available");
-                        failed = TRUE;
+                        u->a2dp.mode = mode;
+                        if(bt_transport_reconfigure_cb(0, u) < 0)
+                            failed = TRUE;
                     }
                 }
             }
