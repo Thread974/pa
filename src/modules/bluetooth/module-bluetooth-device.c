@@ -129,15 +129,6 @@ struct hsp_info {
     pa_hook_slot *nrec_changed_slot;
 };
 
-struct bluetooth_msg {
-    pa_msgobject parent;
-    pa_card *card;
-};
-
-typedef struct bluetooth_msg bluetooth_msg;
-PA_DEFINE_PRIVATE_CLASS(bluetooth_msg, pa_msgobject);
-#define BLUETOOTH_MSG(o) (bluetooth_msg_cast(o))
-
 struct userdata {
     pa_core *core;
     pa_module *module;
@@ -160,7 +151,6 @@ struct userdata {
     pa_rtpoll *rtpoll;
     pa_rtpoll_item *rtpoll_item;
     pa_thread *thread;
-    bluetooth_msg *msg;
 
     uint64_t read_index, write_index;
     pa_usec_t started_at;
@@ -188,11 +178,6 @@ struct userdata {
     int stream_write_type;
 
     pa_bool_t filter_added;
-};
-
-enum {
-    BLUETOOTH_MESSAGE_IO_THREAD_FAILED,
-    BLUETOOTH_MESSAGE_MAX
 };
 
 #define FIXED_LATENCY_PLAYBACK_A2DP (25*PA_USEC_PER_MSEC)
@@ -490,25 +475,6 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
     r = pa_source_process_msg(o, code, data, offset, chunk);
 
     return (r < 0 || !failed) ? r : -1;
-}
-
-/* Called from main thread context */
-static int device_process_msg(pa_msgobject *obj, int code, void *data, int64_t offset, pa_memchunk *chunk) {
-    struct bluetooth_msg *u = BLUETOOTH_MSG(obj);
-
-    switch (code) {
-        case BLUETOOTH_MESSAGE_IO_THREAD_FAILED: {
-            if (u->card->module->unload_requested)
-                break;
-
-            pa_log_debug("Switching the profile to off due to IO thread failure.");
-
-            if (pa_card_set_profile(u->card, "off", FALSE) < 0)
-                pa_log_debug("Failed to switch profile to off");
-            break;
-        }
-    }
-    return 0;
 }
 
 /* Run from IO thread */
@@ -1122,7 +1088,6 @@ static void thread_func(void *userdata) {
 fail:
     /* If this was no regular exit from the loop we have to continue processing messages until we receive PA_MESSAGE_SHUTDOWN */
     pa_log_debug("IO thread failed");
-    pa_asyncmsgq_post(pa_thread_mq_get()->outq, PA_MSGOBJECT(u->msg), BLUETOOTH_MESSAGE_IO_THREAD_FAILED, NULL, 0, NULL, NULL);
     pa_asyncmsgq_wait_for(u->thread_mq.inq, PA_MESSAGE_SHUTDOWN);
 
 finish:
@@ -2388,12 +2353,6 @@ int pa__init(pa_module* m) {
     if (add_card(u, device) < 0)
         goto fail;
 
-    if (!(u->msg = pa_msgobject_new(bluetooth_msg)))
-        goto fail;
-
-    u->msg->parent.process_msg = device_process_msg;
-    u->msg->card = u->card;
-
     if (!dbus_connection_add_filter(pa_dbus_connection_get(u->connection), filter_cb, u, NULL)) {
         pa_log_error("Failed to add filter function");
         goto fail;
@@ -2491,9 +2450,6 @@ void pa__done(pa_module *m) {
 
         pa_dbus_connection_unref(u->connection);
     }
-
-    if (u->msg)
-        pa_xfree(u->msg);
 
     if (u->card)
         pa_card_free(u->card);
