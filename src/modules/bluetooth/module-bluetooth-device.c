@@ -1696,7 +1696,7 @@ static void thread_func(void *userdata) {
     pa_assert(u);
     pa_assert(u->transport);
 
-    pa_log_debug("IO Thread starting up");
+    pa_log_debug("IO Thread %p starting up", u->thread);
 
     if (u->core->realtime_scheduling)
         pa_make_realtime(u->core->realtime_priority);
@@ -1846,12 +1846,13 @@ static void thread_func(void *userdata) {
             pollfd->events = (short) (((u->sink && PA_SINK_IS_LINKED(u->sink->thread_info.state) && !writable) ? POLLOUT : 0) |
                                       (u->source && PA_SOURCE_IS_LINKED(u->source->thread_info.state) ? POLLIN : 0));
 
+        pa_log_debug("thread %p polling socket %d (stream_fd %d)", u->thread, pollfd?pollfd->fd:-1, u->stream_fd);
         if ((ret = pa_rtpoll_run(u->rtpoll, TRUE)) < 0) {
             pa_log_debug("pa_rtpoll_run failed with: %d", ret);
             goto fail;
         }
         if (ret == 0) {
-            pa_log_debug("IO thread shutdown requested, stopping cleanly");
+            pa_log_debug("IO thread %p shutdown requested, stopping cleanly", u->thread);
             bt_transport_release(u);
             goto finish;
         }
@@ -1870,12 +1871,12 @@ static void thread_func(void *userdata) {
 
 fail:
     /* If this was no regular exit from the loop we have to continue processing messages until we receive PA_MESSAGE_SHUTDOWN */
-    pa_log_debug("IO thread failed");
+    pa_log_debug("IO thread %p failed", u->thread);
     pa_asyncmsgq_post(pa_thread_mq_get()->outq, PA_MSGOBJECT(u->msg), BLUETOOTH_MESSAGE_IO_THREAD_FAILED, NULL, 0, NULL, NULL);
     pa_asyncmsgq_wait_for(u->thread_mq.inq, PA_MESSAGE_SHUTDOWN);
 
 finish:
-    pa_log_debug("IO thread shutting down");
+    pa_log_debug("IO thread %p shutting down", u->thread);
 }
 
 /* Run from main thread */
