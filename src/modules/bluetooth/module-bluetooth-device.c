@@ -479,7 +479,9 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
                           failed = TRUE;
                     } else {
                         pa_log_debug("No transport available");
-                        failed = TRUE;
+                        u->a2dp.mode = mode;
+                        if(bt_transport_reconfigure_cb(0, u) < 0)
+                            failed = TRUE;
                     }
                 }
             }
