@@ -1650,6 +1650,7 @@ static void thread_func(void *userdata) {
     unsigned do_write = 0;
     unsigned pending_read_bytes = 0;
     pa_bool_t writable = FALSE;
+    int i = 0;
 
     pa_assert(u);
     pa_assert(u->transport);
@@ -1803,6 +1804,9 @@ static void thread_func(void *userdata) {
         if (pollfd)
             pollfd->events = (short) (((u->sink && PA_SINK_IS_LINKED(u->sink->thread_info.state) && !writable) ? POLLOUT : 0) |
                                       (u->source && PA_SOURCE_IS_LINKED(u->source->thread_info.state) ? POLLIN : 0));
+
+        if (i++ % 20 == 0)
+            pa_log_debug("IO Thread %p polling socket %d", u->thread, pollfd ? pollfd->fd : -1);
 
         if ((ret = pa_rtpoll_run(u->rtpoll, TRUE)) < 0) {
             pa_log_debug("pa_rtpoll_run failed with: %d", ret);
