@@ -1654,7 +1654,7 @@ static void thread_func(void *userdata) {
     pa_assert(u);
     pa_assert(u->transport);
 
-    pa_log_debug("IO Thread starting up");
+    pa_log_debug("IO Thread %p starting up", u->thread);
 
     if (u->core->realtime_scheduling)
         pa_make_realtime(u->core->realtime_priority);
@@ -1809,7 +1809,7 @@ static void thread_func(void *userdata) {
             goto fail;
         }
         if (ret == 0) {
-            pa_log_debug("IO thread shutdown requested, stopping cleanly");
+            pa_log_debug("IO thread %p shutdown requested, stopping cleanly", u->thread);
             bt_transport_release(u);
             goto finish;
         }
@@ -1828,11 +1828,11 @@ static void thread_func(void *userdata) {
 
 fail:
     /* If this was no regular exit from the loop we have to continue processing messages until we receive PA_MESSAGE_SHUTDOWN */
-    pa_log_debug("IO thread failed");
+    pa_log_debug("IO thread %p failed", u->thread);
     pa_asyncmsgq_wait_for(u->thread_mq.inq, PA_MESSAGE_SHUTDOWN);
 
 finish:
-    pa_log_debug("IO thread shutting down");
+    pa_log_debug("IO thread %p shutting down", u->thread);
 }
 
 /* Run from main thread */
