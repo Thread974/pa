@@ -977,34 +977,34 @@ static short const mpeg_frame_length[MPEG_INDEX][MPEG_LAYER_INDEX] =
 
 static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len)
 {
-    unsigned int	tmp;
-    unsigned int	idex;
-    unsigned int	id;
-    unsigned int	bitrate;
-    unsigned int	freq;
-    unsigned int	bits;
+    unsigned int        tmp;
+    unsigned int        idex;
+    unsigned int        id;
+    unsigned int        bitrate;
+    unsigned int        freq;
+    unsigned int        bits;
 
     pa_assert(len != NULL);
     pa_assert(sample_len != NULL);
 
     tmp = uextract(hi, 21, 11);
-    if (tmp == 0x7ff) {			/* valid sync word */
+    if (tmp == 0x7ff) {                        /* valid sync word */
         tmp = uextract(hi, 19, 2);
-        if (tmp != 1) {			/* valid IDex */
+        if (tmp != 1) {                        /* valid IDex */
 
             idex = tmp >> 1;
             if (idex != 0) { /* MP3 2.5, not supported by A2DP */
 
                 id = tmp & 1;
                 tmp = uextract(hi, 17, 2);
-                if (tmp == 0x1) {	/* layer 3 */
+                if (tmp == 0x1) {        /* layer 3 */
 
                     bitrate = uextract(hi, 12, 4);
-                    if ((bitrate != 0) &&	/* not free format */
-                        (bitrate != 0xf)) {	/* not reserved */
+                    if ((bitrate != 0) &&        /* not free format */
+                        (bitrate != 0xf)) {        /* not reserved */
 
                         freq = uextract(hi, 10, 2);
-                        if (freq != 3) {	/* valid sampling frequency */
+                        if (freq != 3) {        /* valid sampling frequency */
 
                             tmp = uextract(hi, 9, 1);
                             bitrate = mpeg_layer_bitrates[id][bitrate] * 1000;
@@ -1012,7 +1012,7 @@ static pa_bool_t mp3_synclength(uint32_t hi, uint32_t *len, uint32_t *sample_len
                                 (unsigned int) ((bitrate  * mpeg_frame_length[id][1]) /
                                                 mpeg_sampling_frequencies[id][freq]);
 
-                            bits /= 8;	/* # of bytes */
+                            bits /= 8;        /* # of bytes */
                             if (tmp) { /* padding */
                                 bits += 1;
                             }
