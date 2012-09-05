@@ -249,7 +249,7 @@ static int bt_transport_reconfigure_cb(int err, void *data) {
     return bt_transport_acquire(u, TRUE);
 }
 
-static int bt_transport_reconfigure(struct userdata *u, const char *endpoint) {
+static int bt_transport_reconfigure(struct userdata *u, const char* path, uint8_t codec, uint8_t *config, int length) {
     const pa_bluetooth_transport *t;
 
     pa_log_debug("Configure for mode %s", (u->a2dp.mode == A2DP_MODE_SBC) ? "SBC":"MPEG");
@@ -262,7 +262,7 @@ static int bt_transport_reconfigure(struct userdata *u, const char *endpoint) {
         return -1;
     }
 
-    pa_bluetooth_transport_reconfigure(t, endpoint, bt_transport_reconfigure_cb, u);
+    pa_bluetooth_transport_reconfigure(t, path, codec, config, length, bt_transport_reconfigure_cb, u);
 
     /* After request configuration, transport will be recreated */
     pa_xfree(u->transport);
@@ -415,6 +415,35 @@ done:
     return setup_stream(u);
 }
 
+struct avdtp_media_codec_capability {
+        uint8_t rfa0:4;
+        uint8_t media_type:4;
+        uint8_t media_codec_type;
+        uint8_t data[0];
+} __attribute__ ((packed));
+
+struct sbc_codec_cap {
+        struct avdtp_media_codec_capability cap;
+        uint8_t channel_mode:4;
+        uint8_t frequency:4;
+        uint8_t allocation_method:2;
+        uint8_t subbands:2;
+        uint8_t block_length:4;
+        uint8_t min_bitpool;
+        uint8_t max_bitpool;
+} __attribute__ ((packed));
+
+struct mpeg_codec_cap {
+        struct avdtp_media_codec_capability cap;
+        uint8_t channel_mode:4;
+        uint8_t crc:1;
+        uint8_t layer:3;
+        uint8_t frequency:6;
+        uint8_t mpf:1;
+        uint8_t rfa:1;
+        uint16_t bitrate;
+} __attribute__ ((packed));
+
 /* Run from IO thread */
 static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offset, pa_memchunk *chunk) {
     struct userdata *u = PA_SINK(o)->userdata;
@@ -435,6 +464,33 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 
             pa_sink_input *i = PA_SINK_INPUT(data);
             a2dp_mode_t mode;
+            struct sbc_codec_cap sbc_cap;
+            struct mpeg_codec_cap mpg_cap;
+
+                memset(&mpg_cap, 0, sizeof(mpg_cap));
+
+                /* FIXME: this code says MP3 and hope the receiver accept */
+                mpg_cap.cap.media_type = 0;
+                mpg_cap.cap.media_codec_type = 1;
+                mpg_cap.channel_mode = 1; /* JS */
+                mpg_cap.crc = 0;
+                mpg_cap.layer = 1; /* L3 */
+                mpg_cap.frequency = (1 << 1); /* 44100 */
+                mpg_cap.mpf = 0;
+                mpg_cap.bitrate = 0x10;
+
+                memset(&sbc_cap, 0, sizeof(sbc_cap));
+
+                /* FIXME: this is the mandatory SBC params for a source */
+                sbc_cap.cap.media_type = 0;
+                sbc_cap.cap.media_codec_type = 0;
+                sbc_cap.channel_mode = 1; /* JS */
+                sbc_cap.frequency = (1 << 1); /* 44100 */
+                sbc_cap.allocation_method = 1; /* loudness */
+                sbc_cap.subbands = 1; /* 8 */
+                sbc_cap.block_length = 1; /* 16 */
+                sbc_cap.min_bitpool = 53;
+                sbc_cap.max_bitpool = 53;
 
             pa_log_debug("PA_SINK_MESSAGE_ADD_INPUT i %p encoding %d:%s passthrough %d, has_mpeg %d", i, i->format->encoding,
                         (i->format->encoding == PA_ENCODING_PCM) ? "PCM" : (i->format->encoding == PA_ENCODING_MPEG_IEC61937) ? "IEC" : "Other",
@@ -449,17 +505,23 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 
                 if (PA_UNLIKELY(mode != u->a2dp.mode)) {
                     if (u->transport) {
-                        const char *endpoint = A2DP_SOURCE_ENDPOINT;
                         bt_transport_release(u);
 
                         u->a2dp.mode = mode;
                         pa_log_debug("DBUS Switch to mode %s",  u->a2dp.mode == A2DP_MODE_SBC ? "SBC" : "MPEG");
 
-                        if (u->a2dp.mode == A2DP_MODE_MPEG)
-                          endpoint = A2DP_SOURCE_ENDPOINT_MPEG;
-
                         if(bt_transport_reconfigure_cb(0, u) < 0) {
-                            if (bt_transport_reconfigure(u, endpoint) < 0)
+                            int codec = 0;
+                            uint8_t *config = (uint8_t *)&sbc_cap;
+                            int length = sizeof(sbc_cap);
+                            const char *path = A2DP_SOURCE_ENDPOINT;
+                            if (u->a2dp.mode == A2DP_MODE_MPEG) {
+                                codec = 1;
+                                config = (uint8_t *)&mpg_cap;
+                                length = sizeof(mpg_cap);
+                                path = A2DP_SOURCE_ENDPOINT_MPEG;
+                            }
+                            if (bt_transport_reconfigure(u, path, codec, config, length) < 0)
                                 failed = TRUE;
                         }
                     } else {
@@ -548,6 +610,34 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
     switch (code) {
         case PA_SOURCE_MESSAGE_ADD_OUTPUT: {
             a2dp_mode_t mode;
+            struct sbc_codec_cap sbc_cap;
+            struct mpeg_codec_cap mpg_cap;
+
+                memset(&mpg_cap, 0, sizeof(mpg_cap));
+
+                /* FIXME: this code says MP3 and hope the receiver accept */
+                mpg_cap.cap.media_type = 0;
+                mpg_cap.cap.media_codec_type = 1;
+                mpg_cap.channel_mode = 1; /* JS */
+                mpg_cap.crc = 0;
+                mpg_cap.layer = 1; /* L3 */
+                mpg_cap.frequency = (1 << 1); /* 44100 */
+                mpg_cap.mpf = 0;
+                mpg_cap.bitrate = 0x10;
+
+                memset(&sbc_cap, 0, sizeof(sbc_cap));
+
+                /* FIXME: this is the mandatory SBC params for a source */
+                sbc_cap.cap.media_type = 0;
+                sbc_cap.cap.media_codec_type = 0;
+                sbc_cap.channel_mode = 1; /* JS */
+                sbc_cap.frequency = (1 << 1); /* 44100 */
+                sbc_cap.allocation_method = 1; /* loudness */
+                sbc_cap.subbands = 1; /* 8 */
+                sbc_cap.block_length = 1; /* 16 */
+                sbc_cap.min_bitpool = 53;
+                sbc_cap.max_bitpool = 53;
+
 
             if (u->profile == PROFILE_A2DP_SOURCE) {
                 if (pa_source_is_passthrough(u->source) && u->a2dp.has_mpeg)
@@ -557,17 +647,23 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
 
                 if (PA_UNLIKELY(mode != u->a2dp.mode)) {
                     if (u->transport) {
-                        const char *endpoint = A2DP_SINK_ENDPOINT;
                         bt_transport_release(u);
-
                         u->a2dp.mode = mode;
                         pa_log_debug("DBUS Switch to mode %s",  u->a2dp.mode == A2DP_MODE_SBC ? "SBC" : "MPEG");
 
-                        if (u->a2dp.mode == A2DP_MODE_MPEG)
-                          endpoint = A2DP_SINK_ENDPOINT_MPEG;
-
                         if(bt_transport_reconfigure_cb(0, u) < 0) {
-                            if (bt_transport_reconfigure(u, endpoint) < 0)
+                            int codec = 0;
+                            uint8_t *config = (uint8_t *)&sbc_cap;
+                            int length = sizeof(sbc_cap);
+                            const char *path = A2DP_SINK_ENDPOINT;
+                            if (u->a2dp.mode == A2DP_MODE_MPEG) {
+                                codec = 1;
+                                config = (uint8_t *)&mpg_cap;
+                                length = sizeof(mpg_cap);
+                                path = A2DP_SINK_ENDPOINT_MPEG;
+                            }
+
+                            if (bt_transport_reconfigure(u, path, codec, config, length) < 0)
                                 failed = TRUE;
                         }
                     } else {
@@ -1805,7 +1901,7 @@ static void thread_func(void *userdata) {
             pollfd->events = (short) (((u->sink && PA_SINK_IS_LINKED(u->sink->thread_info.state) && !writable) ? POLLOUT : 0) |
                                       (u->source && PA_SOURCE_IS_LINKED(u->source->thread_info.state) ? POLLIN : 0));
 
-        if (i++ % 20 == 0)
+        if (i++ % 100 == 0)
             pa_log_debug("IO Thread %p polling socket %d", u->thread, pollfd ? pollfd->fd : -1);
 
         if ((ret = pa_rtpoll_run(u->rtpoll, TRUE)) < 0) {

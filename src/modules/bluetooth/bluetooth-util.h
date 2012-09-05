@@ -138,7 +138,7 @@ const pa_bluetooth_device* pa_bluetooth_discovery_get_by_address(pa_bluetooth_di
 pa_bluetooth_transport* pa_bluetooth_discovery_get_transport(pa_bluetooth_discovery *y, const char *path);
 const pa_bluetooth_transport* pa_bluetooth_device_get_transport(const pa_bluetooth_device *d, enum profile profile, uint8_t codec);
 
-void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const char *endpoint, bt_transport_config_cb_t cb, void *data);
+void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const char *path, uint8_t codec, const uint8_t *config, int length, bt_transport_config_cb_t cb, void *data);
 int pa_bluetooth_transport_acquire(const pa_bluetooth_transport *t, const char *accesstype, size_t *imtu, size_t *omtu);
 void pa_bluetooth_transport_release(const pa_bluetooth_transport *t, const char *accesstype);
 int pa_bluetooth_transport_parse_property(pa_bluetooth_transport *t, DBusMessageIter *i);

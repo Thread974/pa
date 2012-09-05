@@ -1074,7 +1074,7 @@ finish:
     pa_xfree(cbinfo);
 }
 
-void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const char *endpoint, bt_transport_config_cb_t cb, void *data) {
+void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const char *path, uint8_t codec, const uint8_t *config, int length, bt_transport_config_cb_t cb, void *data) {
     DBusMessage *m;
     DBusError err;
     struct pending_config_info *cbinfo;
@@ -1085,7 +1085,9 @@ void pa_bluetooth_transport_reconfigure(const pa_bluetooth_transport *t, const c
     dbus_error_init(&err);
 
     pa_assert_se(m = dbus_message_new_method_call("org.bluez", t->path, "org.bluez.MediaTransport", "RequestTransport"));
-    pa_assert_se(dbus_message_append_args(m, DBUS_TYPE_STRING, &endpoint, DBUS_TYPE_INVALID));
+    pa_assert_se(dbus_message_append_args(m, DBUS_TYPE_STRING, &path, DBUS_TYPE_BYTE, &codec,
+                            DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE, &config, length,
+                            DBUS_TYPE_INVALID));
 
     cbinfo = pa_xmalloc(sizeof(struct pending_config_info));
     cbinfo->cb = cb;
