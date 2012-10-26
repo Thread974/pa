@@ -396,19 +396,19 @@ static int parse_device_property(pa_bluetooth_discovery *y, pa_bluetooth_device 
 
                     /* Vudentz said the interfaces are here when the UUIDs are announced */
                     if (strcasecmp(HSP_AG_UUID, value) == 0 || strcasecmp(HFP_AG_UUID, value) == 0) {
-                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.bluez.HandsfreeGateway", "GetProperties"));
+                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.freedesktop.DBus.Properties", "GetAll"));
                         send_and_add_to_pending(y, m, get_properties_reply, d);
                         has_audio = TRUE;
                     } else if (strcasecmp(HSP_HS_UUID, value) == 0 || strcasecmp(HFP_HS_UUID, value) == 0) {
-                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.bluez.Headset", "GetProperties"));
+                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.freedesktop.DBus.Properties", "GetAll"));
                         send_and_add_to_pending(y, m, get_properties_reply, d);
                         has_audio = TRUE;
                     } else if (strcasecmp(A2DP_SINK_UUID, value) == 0) {
-                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.bluez.AudioSink", "GetProperties"));
+                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.freedesktop.DBus.Properties", "GetAll"));
                         send_and_add_to_pending(y, m, get_properties_reply, d);
                         has_audio = TRUE;
                     } else if (strcasecmp(A2DP_SOURCE_UUID, value) == 0) {
-                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.bluez.AudioSource", "GetProperties"));
+                        pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.freedesktop.DBus.Properties", "GetAll"));
                         send_and_add_to_pending(y, m, get_properties_reply, d);
                         has_audio = TRUE;
                     }
@@ -418,7 +418,7 @@ static int parse_device_property(pa_bluetooth_discovery *y, pa_bluetooth_device 
 
                 /* this might eventually be racy if .Audio is not there yet, but the State change will come anyway later, so this call is for cold-detection mostly */
                 if (has_audio) {
-                    pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.bluez.Audio", "GetProperties"));
+                    pa_assert_se(m = dbus_message_new_method_call("org.bluez", d->path, "org.freedesktop.DBus.Properties", "GetAll"));//"org.bluez.Audio", "GetProperties"));
                     send_and_add_to_pending(y, m, get_properties_reply, d);
                 }
             }
@@ -502,7 +502,7 @@ static pa_bluetooth_device *found_device(pa_bluetooth_discovery *y, const char* 
 
     pa_hashmap_put(y->devices, d->path, d);
 
-    pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.bluez.Device", "GetProperties"));
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.freedesktop.DBus.Properties", "GetAll"));//"org.bluez.Device", "GetProperties"));
     send_and_add_to_pending(y, m, get_properties_reply, d);
 
     /* Before we read the other properties (Audio, AudioSink, AudioSource,
@@ -539,7 +539,7 @@ static void get_properties_reply(DBusPendingCall *pending, void *userdata) {
 
     valid = dbus_message_get_type(r) == DBUS_MESSAGE_TYPE_ERROR ? -1 : 1;
 
-    if (dbus_message_is_method_call(p->message, "org.bluez.Device", "GetProperties"))
+    if (dbus_message_is_method_call(p->message, "org.freedesktop.DBus.Properties", "GetAll"))//;"org.bluez.Device", "GetProperties"))
         d->device_info_valid = valid;
 
     if (dbus_message_is_error(r, DBUS_ERROR_SERVICE_UNKNOWN)) {
@@ -549,17 +549,17 @@ static void get_properties_reply(DBusPendingCall *pending, void *userdata) {
     }
 
     if (dbus_message_get_type(r) == DBUS_MESSAGE_TYPE_ERROR) {
-        pa_log("%s.GetProperties() failed: %s: %s", dbus_message_get_interface(p->message), dbus_message_get_error_name(r), pa_dbus_get_error_message(r));
+        pa_log("%s.GetAll() failed: %s: %s", dbus_message_get_interface(p->message), dbus_message_get_error_name(r), pa_dbus_get_error_message(r));
         goto finish;
     }
 
     if (!dbus_message_iter_init(r, &arg_i)) {
-        pa_log("GetProperties reply has no arguments.");
+        pa_log("GetAll reply has no arguments.");
         goto finish;
     }
 
     if (dbus_message_iter_get_arg_type(&arg_i) != DBUS_TYPE_ARRAY) {
-        pa_log("GetProperties argument is not an array.");
+        pa_log("GetAll argument is not an array.");
         goto finish;
     }
 
@@ -726,7 +726,7 @@ static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const
 static void found_adapter(pa_bluetooth_discovery *y, const char *path) {
     DBusMessage *m;
 
-    pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.bluez.Adapter", "GetProperties"));
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", path, "org.freedesktop.DBus.Properties", "GetAll"));//"org.bluez.Adapter", "GetProperties"));
     send_and_add_to_pending(y, m, get_properties_reply, NULL);
 
     register_endpoint(y, path, HFP_AG_ENDPOINT, HFP_AG_UUID);
@@ -739,7 +739,7 @@ static void list_adapters(pa_bluetooth_discovery *y) {
     DBusMessage *m;
     pa_assert(y);
 
-    pa_assert_se(m = dbus_message_new_method_call("org.bluez", "/", "org.bluez.Manager", "GetProperties"));
+    pa_assert_se(m = dbus_message_new_method_call("org.bluez", "/", "org.freedesktop.DBus.Properties", "GetAll"));//"org.bluez.Manager", "GetProperties"));
     send_and_add_to_pending(y, m, get_properties_reply, NULL);
 }
 
