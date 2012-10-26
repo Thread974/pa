@@ -72,7 +72,11 @@ static pa_hook_result_t load_module_for_device(pa_bluetooth_discovery *y, const 
     pa_assert(u);
     pa_assert(d);
 
+    pa_log_info("In da hook");
+
     mi = pa_hashmap_get(u->hashmap, d->path);
+
+    pa_log_debug("audio device being connected dead %d, device_connected %d, audio_state %d, audio_source_state %d, hfgw_state %d", d->dead, d->device_connected, d->audio_state, d->audio_source_state, d->hfgw_state);
 
     if (!d->dead && d->device_connected > 0 &&
         (d->audio_state >= PA_BT_AUDIO_STATE_CONNECTED ||

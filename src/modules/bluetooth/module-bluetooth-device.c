@@ -2625,6 +2625,7 @@ int pa__init(pa_module* m) {
                 "type='signal',sender='org.bluez',interface='org.bluez.Headset',member='PropertyChanged'",
                 "type='signal',sender='org.bluez',interface='org.bluez.AudioSource',member='PropertyChanged'",
                 "type='signal',sender='org.bluez',interface='org.bluez.AudioSink',member='PropertyChanged'",
+                "type='signal',sender='org.freedesktop',interface='org.freedesktop.DBus',member='PropertiesChanged'",
                 NULL) < 0) {
 
         pa_xfree(speaker);
