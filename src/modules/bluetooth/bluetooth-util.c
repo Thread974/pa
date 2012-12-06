@@ -1189,6 +1189,36 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
             goto fail;
 
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    } else if (dbus_message_is_signal(m, "org.freedesktop.DBus.Properties", "PropertiesChanged")) {
+        DBusMessageIter arg_i;
+        const char *interface;
+
+        if (y->version != BLUEZ_VERSION_5)
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED; /* No reply received yet from GetManagedObjects */
+
+        if (!dbus_message_iter_init(m, &arg_i) || dbus_message_iter_get_arg_type(&arg_i) != DBUS_TYPE_STRING) {
+            pa_log("Failed to parse PropertiesChanged: %s", err.message);
+            goto fail;
+        }
+
+        dbus_message_iter_get_basic(&arg_i, &interface);
+
+        if (!dbus_message_iter_next(&arg_i) || dbus_message_iter_get_arg_type(&arg_i) != DBUS_TYPE_ARRAY) {
+            pa_log("Changed properties missing for interface %s", interface);
+            return -1;
+        }
+
+        if (pa_streq(interface, "org.bluez.Device1")) {
+            pa_bluetooth_device *d;
+
+            if (!(d = pa_hashmap_get(y->devices, dbus_message_get_path(m))))
+                return DBUS_HANDLER_RESULT_NOT_YET_HANDLED; /* Device not being tracked */
+
+            if (parse_device_properties(d, &arg_i) < 0)
+                return -1;
+        }
+
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
     }
 
 fail:
@@ -1825,6 +1855,8 @@ pa_bluetooth_discovery* pa_bluetooth_discovery_get(pa_core *c) {
                 "type='signal',sender='org.bluez',interface='org.bluez.AudioSource',member='PropertyChanged'",
                 "type='signal',sender='org.bluez',interface='org.bluez.HandsfreeGateway',member='PropertyChanged'",
                 "type='signal',sender='org.bluez',interface='org.bluez.MediaTransport',member='PropertyChanged'",
+                "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'"
+                ",arg0='org.bluez.Device1'",
                 NULL) < 0) {
         pa_log("Failed to add D-Bus matches: %s", err.message);
         goto fail;
