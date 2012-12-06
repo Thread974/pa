@@ -814,7 +814,7 @@ finish:
 static void register_endpoint(pa_bluetooth_discovery *y, const char *path, const char *endpoint, const char *uuid) {
     DBusMessage *m;
     DBusMessageIter i, d;
-    uint8_t codec = 0;
+    uint8_t codec = 1;
 
     pa_log_debug("Registering %s on adapter %s.", endpoint, path);
 
