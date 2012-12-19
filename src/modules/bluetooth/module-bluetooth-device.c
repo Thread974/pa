@@ -115,11 +115,30 @@ struct a2dp_info {
     uint8_t max_bitpool;
 };
 
+struct msbc_parser {
+    int len;
+    uint8_t buffer[60];
+};
+
 struct hsp_info {
     pa_sink *sco_sink;
     void (*sco_sink_set_volume)(pa_sink *s);
     pa_source *sco_source;
     void (*sco_source_set_volume)(pa_source *s);
+
+    pa_bool_t sbc_initialized;           /* Keep track if the encoder is initialized */
+
+    sbc_t sbcenc;                        /* Coder data */
+    uint8_t *ebuffer;                        /* Codec transfer buffer */
+    size_t ebuffer_size;                  /* Size of the buffer */
+    size_t ebuffer_start;                  /* start of encoding data */
+    size_t ebuffer_end;                  /* end of encoding data */
+
+    struct msbc_parser parser;           /* mSBC parser for concatenating frames */
+    sbc_t sbcdec;                        /* Decoder data */
+
+    size_t msbc_frame_size;
+    size_t decoded_frame_size;
 };
 
 struct bluetooth_msg {
@@ -365,6 +384,11 @@ static int bt_transport_acquire(struct userdata *u, bool optional) {
     pa_log_debug("Acquiring transport %s", u->transport->path);
 
     u->stream_fd = pa_bluetooth_transport_acquire(u->transport, optional, &u->read_link_mtu, &u->write_link_mtu);
+
+    pa_log_debug("Forcing 60 bytes MTU");
+    u->read_link_mtu = u->write_link_mtu = 60;
+    pa_log_debug("Acquired transport %s (rmtu %ld, wmtu %ld)", u->transport->path, u->read_link_mtu, u->write_link_mtu);
+
     if (u->stream_fd < 0) {
         if (!optional)
             pa_log("Failed to acquire transport %s", u->transport->path);
@@ -548,6 +572,97 @@ static int device_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
     return 0;
 }
 
+static void msbc_parser_reset(struct msbc_parser *p) {
+    p->len = 0;
+}
+
+static int msbc_state_machine(struct msbc_parser *p, uint8_t byte) {
+    pa_assert(p->len < 60);
+
+    switch (p->len) {
+    case 0:
+        if (byte == 0x01)
+            goto copy;
+        return 0;
+    case 1:
+        if (byte == 0x08 || byte == 0x38 || byte == 0xC8 || byte == 0xF8)
+            goto copy;
+        break;
+    case 2:
+        if (byte == 0xAD)
+            goto copy;
+        break;
+    case 3:
+        if (byte == 0x00)
+            goto copy;
+        break;
+    case 4:
+        if (byte == 0x00)
+            goto copy;
+        break;
+    default:
+        goto copy;
+    }
+
+    p->len = 0;
+    return 0;
+
+copy:
+    p->buffer[p->len] = byte;
+    p->len ++;
+
+    return p->len;
+}
+
+static size_t msbc_parse(sbc_t *sbcdec, struct msbc_parser *p, uint8_t *data, int len, uint8_t *out, int outlen, int *bytes) {
+    size_t totalwritten = 0;
+    size_t written = 0;
+    int i;
+    *bytes = 0;
+
+    for (i = 0; i < len; i++) {
+        if (msbc_state_machine(p, data[i]) == 60) {
+            int decoded = 0;
+            decoded = sbc_decode(sbcdec, p->buffer + 2, p->len - 2 - 1, out, outlen, &written);
+            if (decoded > 0) {
+                totalwritten += written;
+                *bytes += decoded;
+            } else {
+                pa_log_debug("Error while decoding: %d\n", decoded);
+            }
+            msbc_parser_reset(p);
+        }
+    }
+    return totalwritten;
+}
+
+/* Run from IO thread */
+static void hsp_prepare_buffer(struct userdata *u) {
+
+    pa_assert(u);
+
+    /* Initialize sbc codec if not already done */
+    if (!u->hsp.sbc_initialized) {
+        sbc_init_msbc(&u->hsp.sbcenc, 0);
+        sbc_init_msbc(&u->hsp.sbcdec, 0);
+        u->hsp.msbc_frame_size = 2 + sbc_get_frame_length(&u->hsp.sbcenc) + 1;
+        u->hsp.decoded_frame_size = sbc_get_codesize(&u->hsp.sbcenc);
+        u->hsp.sbc_initialized = TRUE;
+        msbc_parser_reset(&u->hsp.parser);
+    }
+
+    /* Allocate a buffer for encoding, and a tmp buffer for sending */
+    if (u->hsp.ebuffer_size < u->hsp.msbc_frame_size) {
+        pa_xfree(u->hsp.ebuffer);
+        u->hsp.ebuffer_size = u->hsp.msbc_frame_size * 4; /* 5 * 48 = 10 * 24 = 4 * 60 */
+        u->hsp.ebuffer = pa_xmalloc(u->hsp.ebuffer_size);
+        u->hsp.ebuffer_start = 0;
+        u->hsp.ebuffer_end = 0;
+    }
+}
+
+static const char sntable[4] = { 0x08, 0x38, 0xC8, 0xF8 };
+
 /* Run from IO thread */
 static int hsp_process_render(struct userdata *u) {
     int ret = 0;
@@ -556,27 +671,53 @@ static int hsp_process_render(struct userdata *u) {
     pa_assert(u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW);
     pa_assert(u->sink);
 
+    hsp_prepare_buffer(u);
+
     /* First, render some data */
     if (!u->write_memchunk.memblock)
-        pa_sink_render_full(u->sink, u->write_block_size, &u->write_memchunk);
-
-    pa_assert(u->write_memchunk.length == u->write_block_size);
+        pa_sink_render_full(u->sink, u->hsp.decoded_frame_size, &u->write_memchunk);
 
     for (;;) {
-        ssize_t l;
-        const void *p;
+        int l = 0;
+        pa_bool_t wrote = false;
+        const uint8_t *p;
+        size_t written = 0;
+        uint8_t *h2 = u->hsp.ebuffer + u->hsp.ebuffer_end;
+        static int sn = 0;
 
         /* Now write that data to the socket. The socket is of type
          * SEQPACKET, and we generated the data of the MTU size, so this
          * should just work. */
 
         p = (const uint8_t *) pa_memblock_acquire_chunk(&u->write_memchunk);
-        l = pa_write(u->stream_fd, p, u->write_memchunk.length, &u->stream_write_type);
+        h2[0] = 0x01;
+        h2[1] = sntable[sn];
+        h2[59] = 0xff;
+        sn = (sn + 1) % 4;
+
+        pa_assert(u->hsp.ebuffer_end + u->hsp.msbc_frame_size <= u->hsp.ebuffer_size);
+        sbc_encode(&u->hsp.sbcenc, p, u->write_memchunk.length, ((uint8_t *)u->hsp.ebuffer)+u->hsp.ebuffer_end+2, u->hsp.ebuffer_size-u->hsp.ebuffer_end-2, (ssize_t *)&written);
+
+        written += 2 /* H2 */ + 1 /* 0xff */;
+        pa_assert(written == u->hsp.msbc_frame_size);
+        u->hsp.ebuffer_end += written;
+
+        /* Send MTU bytes of it, if there is more it will send later */
+        while (u->hsp.ebuffer_start + u->write_link_mtu <= u->hsp.ebuffer_end) {
+            l = pa_write(u->stream_fd, u->hsp.ebuffer + u->hsp.ebuffer_start, u->write_link_mtu, &u->stream_write_type);
+            wrote = true;
+            if (l <= 0) {
+                pa_log_debug("Error while writing: l %d, errno %d", l, errno);
+                break;
+            }
+            u->hsp.ebuffer_start += l;
+            if (u->hsp.ebuffer_start >= u->hsp.ebuffer_end)
+                u->hsp.ebuffer_start = u->hsp.ebuffer_end = 0;
+        }
+
         pa_memblock_release(u->write_memchunk.memblock);
 
-        pa_assert(l != 0);
-
-        if (l < 0) {
+        if (wrote && l < 0) {
 
             if (errno == EINTR)
                 /* Retry right away if we got interrupted */
@@ -591,12 +732,10 @@ static int hsp_process_render(struct userdata *u) {
             break;
         }
 
-        pa_assert((size_t) l <= u->write_memchunk.length);
-
-        if ((size_t) l != u->write_memchunk.length) {
+        if ((size_t) l != (size_t)u->write_link_mtu) {
             pa_log_error("Wrote memory block to socket only partially! %llu written, wanted to write %llu.",
                         (unsigned long long) l,
-                        (unsigned long long) u->write_memchunk.length);
+                        (unsigned long long) u->write_link_mtu);
             ret = -1;
             break;
         }
@@ -622,8 +761,11 @@ static int hsp_process_push(struct userdata *u) {
     pa_assert(u->source);
     pa_assert(u->read_smoother);
 
+    u->read_block_size = u->hsp.decoded_frame_size;
     memchunk.memblock = pa_memblock_new(u->core->mempool, u->read_block_size);
     memchunk.index = memchunk.length = 0;
+
+    hsp_prepare_buffer(u);
 
     for (;;) {
         ssize_t l;
@@ -634,6 +776,9 @@ static int hsp_process_push(struct userdata *u) {
         struct iovec iov;
         bool found_tstamp = false;
         pa_usec_t tstamp;
+        int decoded = 0;
+        size_t written;
+        uint8_t *tmpbuf = pa_xmalloc(u->read_link_mtu);
 
         memset(&m, 0, sizeof(m));
         memset(&aux, 0, sizeof(aux));
@@ -644,12 +789,9 @@ static int hsp_process_push(struct userdata *u) {
         m.msg_control = aux;
         m.msg_controllen = sizeof(aux);
 
-        p = pa_memblock_acquire(memchunk.memblock);
-        iov.iov_base = p;
-        iov.iov_len = pa_memblock_get_length(memchunk.memblock);
+        iov.iov_base = tmpbuf;
+        iov.iov_len = u->read_link_mtu;
         l = recvmsg(u->stream_fd, &m, 0);
-        pa_memblock_release(memchunk.memblock);
-
         if (l <= 0) {
 
             if (l < 0 && errno == EINTR)
@@ -665,12 +807,17 @@ static int hsp_process_push(struct userdata *u) {
             break;
         }
 
-        pa_assert((size_t) l <= pa_memblock_get_length(memchunk.memblock));
+        p = pa_memblock_acquire(memchunk.memblock);
+        written = msbc_parse(&u->hsp.sbcdec, &u->hsp.parser, tmpbuf, l, p, pa_memblock_get_length(memchunk.memblock), &decoded);
+        pa_memblock_release(memchunk.memblock);
 
-        memchunk.length = (size_t) l;
-        u->read_index += (uint64_t) l;
+        pa_xfree(tmpbuf);
 
-        for (cm = CMSG_FIRSTHDR(&m); cm; cm = CMSG_NXTHDR(&m, cm))
+        memchunk.length = (size_t) written;
+
+        u->read_index += (uint64_t) decoded;
+
+        for (cm = CMSG_FIRSTHDR(&m); cm; cm = CMSG_NXTHDR(&m, cm)) {
             if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SO_TIMESTAMP) {
                 struct timeval *tv = (struct timeval*) CMSG_DATA(cm);
                 pa_rtclock_from_wallclock(tv);
@@ -678,6 +825,7 @@ static int hsp_process_push(struct userdata *u) {
                 found_tstamp = true;
                 break;
             }
+        }
 
         if (!found_tstamp) {
             pa_log_warn("Couldn't find SO_TIMESTAMP data in auxiliary recvmsg() data!");
@@ -687,9 +835,10 @@ static int hsp_process_push(struct userdata *u) {
         pa_smoother_put(u->read_smoother, tstamp, pa_bytes_to_usec(u->read_index, &u->sample_spec));
         pa_smoother_resume(u->read_smoother, tstamp, true);
 
-        pa_source_post(u->source, &memchunk);
+        if (memchunk.length > 0)
+            pa_source_post(u->source, &memchunk);
 
-        ret = l;
+        ret = decoded;
         break;
     }
 
@@ -1029,7 +1178,7 @@ static void thread_func(void *userdata) {
 
                 /* We just read something, so we are supposed to write something, too */
                 pending_read_bytes += n_read;
-                do_write += pending_read_bytes / u->write_block_size;
+                do_write = 0;
                 pending_read_bytes = pending_read_bytes % u->write_block_size;
             }
         }
@@ -1043,7 +1192,9 @@ static void thread_func(void *userdata) {
                 if (pollfd->revents & POLLOUT)
                     writable = true;
 
-                if ((!u->source || !PA_SOURCE_IS_LINKED(u->source->thread_info.state)) && do_write <= 0 && writable) {
+                /* mSBC: Force time based scheduling for outgoing packets */
+                /* This is necessary for mSBC because one pushed PCM frame != one sent mSBC frame */
+                if (do_write <= 0 && writable) {
                     pa_usec_t time_passed;
                     pa_usec_t audio_sent;
 
@@ -1848,7 +1999,7 @@ static void bt_transport_config(struct userdata *u) {
     if (u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW) {
         u->sample_spec.format = PA_SAMPLE_S16LE;
         u->sample_spec.channels = 1;
-        u->sample_spec.rate = 8000;
+        u->sample_spec.rate = 16000;
     } else
         bt_transport_config_a2dp(u);
 }
