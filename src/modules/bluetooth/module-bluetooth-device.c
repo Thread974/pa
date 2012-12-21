@@ -120,6 +120,12 @@ struct hsp_info {
     void (*sco_sink_set_volume)(pa_sink *s);
     pa_source *sco_source;
     void (*sco_source_set_volume)(pa_source *s);
+
+    sbc_t sbc;                           /* Codec data */
+    pa_bool_t sbc_initialized;           /* Keep track if the encoder is initialized */
+
+    void* buffer;                        /* Codec transfer buffer */
+    size_t buffer_size;                  /* Size of the buffer */
 };
 
 struct bluetooth_msg {
@@ -544,12 +550,35 @@ static int device_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
 }
 
 /* Run from IO thread */
+static void hsp_prepare_buffer(struct userdata *u) {
+    size_t min_buffer_size = PA_MAX(u->read_link_mtu, u->write_link_mtu);
+
+    pa_assert(u);
+
+    /* Allocate a buffer is needed */
+    if (u->hsp.buffer_size >= min_buffer_size)
+        return;
+
+    u->hsp.buffer_size = 2 * min_buffer_size;
+    pa_xfree(u->hsp.buffer);
+    u->hsp.buffer = pa_xmalloc(u->hsp.buffer_size);
+
+    /* Initialize sbc codec if not already done */
+    if (!u->hsp.sbc_initialized) {
+        sbc_init_msbc(&u->hsp.sbc, 0);
+        u->hsp.sbc_initialized = TRUE;
+    }
+}
+
+/* Run from IO thread */
 static int hsp_process_render(struct userdata *u) {
     int ret = 0;
 
     pa_assert(u);
     pa_assert(u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW);
     pa_assert(u->sink);
+
+    hsp_prepare_buffer(u);
 
     /* First, render some data */
     if (!u->write_memchunk.memblock)
@@ -559,14 +588,25 @@ static int hsp_process_render(struct userdata *u) {
 
     for (;;) {
         ssize_t l;
+        ssize_t written;
+        ssize_t encoded;
         const void *p;
+        uint8_t *h2 = u->hsp.buffer;
+        static int sn = 0;
+        char sntable[4] = { 0x10, 0x12, 0x1C, 0x1F};
 
         /* Now write that data to the socket. The socket is of type
          * SEQPACKET, and we generated the data of the MTU size, so this
          * should just work. */
 
         p = (const uint8_t *) pa_memblock_acquire_chunk(&u->write_memchunk);
-        l = pa_write(u->stream_fd, p, u->write_memchunk.length, &u->stream_write_type);
+        h2[0] = 0x80;
+        h2[1] = sntable[sn];
+        sn = (sn + 1) % 4;
+
+        encoded = sbc_encode(&u->hsp.sbc, p, u->write_memchunk.length, ((uint8_t *)u->hsp.buffer)+2, u->hsp.buffer_size-2, &written);
+        pa_log_debug("MSBC Encoded %d bytes to %d", encoded, written);
+        l = pa_write(u->stream_fd, u->hsp.buffer, 2 + written, &u->stream_write_type);
         pa_memblock_release(u->write_memchunk.memblock);
 
         pa_assert(l != 0);
@@ -620,6 +660,8 @@ static int hsp_process_push(struct userdata *u) {
     memchunk.memblock = pa_memblock_new(u->core->mempool, u->read_block_size);
     memchunk.index = memchunk.length = 0;
 
+    hsp_prepare_buffer(u);
+
     for (;;) {
         ssize_t l;
         void *p;
@@ -629,6 +671,11 @@ static int hsp_process_push(struct userdata *u) {
         struct iovec iov;
         bool found_tstamp = false;
         pa_usec_t tstamp;
+        size_t written;
+        ssize_t decoded;
+        uint8_t *h2 = u->hsp.buffer;
+        static int sn = 0;
+        char sntable[4] = { 0x10, 0x12, 0x1C, 0x1F};
 
         memset(&m, 0, sizeof(m));
         memset(&aux, 0, sizeof(aux));
@@ -639,12 +686,9 @@ static int hsp_process_push(struct userdata *u) {
         m.msg_control = aux;
         m.msg_controllen = sizeof(aux);
 
-        p = pa_memblock_acquire(memchunk.memblock);
-        iov.iov_base = p;
-        iov.iov_len = pa_memblock_get_length(memchunk.memblock);
+        iov.iov_base = u->hsp.buffer;
+        iov.iov_len = u->hsp.buffer_size;
         l = recvmsg(u->stream_fd, &m, 0);
-        pa_memblock_release(memchunk.memblock);
-
         if (l <= 0) {
 
             if (l < 0 && errno == EINTR)
@@ -659,6 +703,21 @@ static int hsp_process_push(struct userdata *u) {
             ret = -1;
             break;
         }
+
+        if (l < 2)
+            pa_log_debug("Read a too small frame %d bytes", l);
+
+        if (h2[0] != 0x80)
+            pa_log_debug("Error in h2 synchronisation header byte 1 %x", h2[0]);
+        if (h2[1] != sntable[sn])
+            pa_log_debug("Error in h2 synchronisation header byte 2 %x", h2[1]);
+        sn = (sn + 1) % 4;
+
+        p = pa_memblock_acquire(memchunk.memblock);
+        decoded = sbc_decode(&u->hsp.sbc, ((uint8_t *)u->hsp.buffer) + 2, l, p, pa_memblock_get_length(memchunk.memblock), &written);
+        pa_log_debug("MSBC Decoded %d bytes to %d", decoded, written);
+        l = pa_write(u->stream_fd, u->hsp.buffer, 2 + written, &u->stream_write_type);
+        pa_memblock_release(memchunk.memblock);
 
         pa_assert((size_t) l <= pa_memblock_get_length(memchunk.memblock));
 
@@ -1843,7 +1902,7 @@ static void bt_transport_config(struct userdata *u) {
     if (u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW) {
         u->sample_spec.format = PA_SAMPLE_S16LE;
         u->sample_spec.channels = 1;
-        u->sample_spec.rate = 8000;
+        u->sample_spec.rate = 16000;
     } else
         bt_transport_config_a2dp(u);
 }
