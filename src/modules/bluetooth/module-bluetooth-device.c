@@ -762,10 +762,36 @@ static int hsp_process_push(struct userdata *u) {
 
         if (u->hsp.cur_frame_size == u->hsp.msbc_frame_size) {
             p = pa_memblock_acquire(memchunk.memblock);
+            pa_log_debug("sbc input block size is %d, available space : %d", sbc_get_codesize(&u->hsp.sbc), pa_memblock_get_length(memchunk.memblock));
+            {
+                static FILE *f = NULL;
+                static int count = 0;
+                if (!f) {
+                        char *filename = pa_sprintf_malloc("/home/fredo/iphone4s-%d.msbc", time(NULL));
+                        f = fopen(filename, "a");
+                        if (f)
+                                pa_log_info("Creating %s", filename);
+                        else
+                                pa_log_error("error creating %s (%d)", filename, errno);
+                        count = 0;
+                        pa_xfree(filename);
+                }
+                if (f) {
+                        count ++;
+                        fwrite(((uint8_t *)u->hsp.buffer) + 2, u->hsp.msbc_frame_size - 2, 1, f);
+                }
+                if (f && count % 100 == 99) {
+                        fclose(f);
+                        count = 0;
+                        f = NULL;
+                }
+            }
             decoded = sbc_decode(&u->hsp.sbc, ((uint8_t *)u->hsp.buffer) + 2, u->hsp.msbc_frame_size - 2, p, pa_memblock_get_length(memchunk.memblock), &written);
             pa_log_debug("MSBC Decoded %d bytes to %d/%d", decoded, written, pa_memblock_get_length(memchunk.memblock));
             pa_memblock_release(memchunk.memblock);
             u->hsp.cur_frame_size = 0;
+
+            memchunk.length = (size_t) written;
 
             /* Previous block decoded an msbc frame, the sample are in memblock */
             i = remain;
@@ -784,9 +810,6 @@ static int hsp_process_push(struct userdata *u) {
             pa_log_debug("3 u->hsp.cur_frame_size %d", u->hsp.cur_frame_size);
         }
 
-        pa_assert((size_t) l <= pa_memblock_get_length(memchunk.memblock));
-
-        memchunk.length = (size_t) l;
         u->read_index += (uint64_t) l;
 
         for (cm = CMSG_FIRSTHDR(&m); cm; cm = CMSG_NXTHDR(&m, cm))
@@ -806,7 +829,9 @@ static int hsp_process_push(struct userdata *u) {
         pa_smoother_put(u->read_smoother, tstamp, pa_bytes_to_usec(u->read_index, &u->sample_spec));
         pa_smoother_resume(u->read_smoother, tstamp, true);
 
-        pa_source_post(u->source, &memchunk);
+        if (memchunk.length > 0)
+                pa_source_post(u->source, &memchunk);
+
         ret = l;
         break;
     }
