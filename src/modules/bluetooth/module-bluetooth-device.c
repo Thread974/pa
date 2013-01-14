@@ -655,7 +655,9 @@ static int hsp_process_render(struct userdata *u) {
 			u->hsp.ebuffer_start = u->hsp.ebuffer_end = 0;
 	}
 #else
-        l = pa_write(u->stream_fd, p, u->write_memchunk.length, &u->stream_write_type);
+        //l = pa_write(u->stream_fd, p, u->write_memchunk.length, &u->stream_write_type);
+	l = 1;
+	written = 1;
 #endif
         pa_memblock_release(u->write_memchunk.memblock);
 
