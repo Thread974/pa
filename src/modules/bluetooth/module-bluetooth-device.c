@@ -699,24 +699,34 @@ static int hsp_process_render(struct userdata *u) {
         h2[59] = 0xff;
         sn = (sn + 1) % 4;
 
+#ifdef DEBUGPCMSTREAM
         for (i = 0; i < u->write_memchunk.length; i+=8) {
             pa_log_debug("RAWPCM: %3d %02X %02X %02X %02X %02X %02X %02X %02X", i, p[i], p[i+1], p[i+2], p[i+3], p[i+4], p[i+5], p[i+6], p[i+7]);
         }
+#endif
 
         pa_assert(u->hsp.ebuffer_end + u->hsp.msbc_frame_size <= u->hsp.ebuffer_size);
         encoded = sbc_encode(&u->hsp.sbcenc, p, u->write_memchunk.length, ((uint8_t *)u->hsp.ebuffer)+u->hsp.ebuffer_end+2, u->hsp.ebuffer_size-u->hsp.ebuffer_end-2, &written);
+#ifdef DEBUGPCMENCODING
         pa_log_debug("MSBC Encoded %d bytes to %d/%d", encoded, written, u->hsp.ebuffer_size);
+#endif
         written += 2 /* H2 */ + 1 /* 0xff */;
         pa_assert(written == u->hsp.msbc_frame_size);
         // We have an msbc frame 60 bytes.
         u->hsp.ebuffer_end += written;
 
+#ifdef DEBUGPCMENCODING
         pa_log_debug("%d bytes of pending data, from %d to %d", u->hsp.ebuffer_end - u->hsp.ebuffer_start, u->hsp.ebuffer_start, u->hsp.ebuffer_end);
+#endif
         // Send 48 bytes of it, if there is more it will send later
         while (u->hsp.ebuffer_start + u->write_link_mtu <= u->hsp.ebuffer_end) {
+#ifdef DEBUGPCMENCODING
             pa_log_debug("Before sending from %d to %d", u->hsp.ebuffer_start,  u->hsp.ebuffer_start + u->write_link_mtu);
+#endif
             l = pa_write(u->stream_fd, u->hsp.ebuffer + u->hsp.ebuffer_start, u->write_link_mtu, &u->stream_write_type);
+#ifdef DEBUGPCMENCODING
             pa_log_debug("Sent %d bytes data", l);
+#endif
             if (l <= 0)
                 break;
             u->hsp.ebuffer_start += l;
