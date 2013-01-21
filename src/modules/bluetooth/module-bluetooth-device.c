@@ -380,8 +380,8 @@ static int bt_transport_acquire(struct userdata *u, bool optional) {
 
     u->stream_fd = pa_bluetooth_transport_acquire(u->transport, optional, &u->read_link_mtu, &u->write_link_mtu);
 
-    pa_log_debug("Forcing 24 bytes MTU");
-    u->read_link_mtu = u->write_link_mtu = 24;
+    pa_log_debug("Forcing 60 bytes MTU");
+    u->read_link_mtu = u->write_link_mtu = 60;
     pa_log_debug("Acquired transport %s (rmtu %ld, wmtu %ld)", u->transport->path, u->read_link_mtu, u->write_link_mtu);
 
     if (u->stream_fd < 0) {
@@ -614,20 +614,29 @@ copy:
     return p->len;
 }
 
-static size_t msbc_parse(sbc_t *sbcdec, struct msbc_parser *p, uint8_t *data, int len, uint8_t *out, int outlen) {
+static size_t msbc_parse(sbc_t *sbcdec, struct msbc_parser *p, uint8_t *data, int len, uint8_t *out, int outlen, int *bytes) {
+    size_t totalwritten = 0;
     size_t written = 0;
     int i;
+    *bytes = 0;
 
     for (i = 0; i < len; i++) {
         if (msbc_state_machine(p, data[i]) == 60) {
+            int decoded = 0;
 #ifdef MSBCDEBUGDECODING
             pa_log_debug("Decoding\n");
 #endif
-            sbc_decode(sbcdec, p->buffer + 2 /* H2 */, p->len - 2 /* H2 */- 1 /* 0xff */, out, outlen, &written);
+            decoded = sbc_decode(sbcdec, p->buffer + 2 /* H2 */, p->len - 2 /* H2 */- 1 /* 0xff */, out, outlen, &written);
+            if (decoded > 0) {
+                totalwritten += written;
+                *bytes += decoded;
+            } else {
+                pa_log_debug("Error while decoding: %d\n", decoded);
+            }
             msbc_parser_reset(p);
         }
     }
-    return written;
+    return totalwritten;
 }
 
 /* Run from IO thread */
@@ -676,12 +685,15 @@ static int hsp_process_render(struct userdata *u) {
         pa_sink_render_full(u->sink, u->hsp.decoded_frame_size, &u->write_memchunk);
 
     for (;;) {
-        ssize_t l;
+        ssize_t l = 0;
+        pa_bool_t wrote = false;
         const uint8_t *p;
         ssize_t written = 0;
+#ifdef DEBUGPCMSTREAM
+        int i;
+#endif
 #define MSBC
 #ifdef MSBC
-        int i;
         ssize_t encoded;
         uint8_t *h2 = u->hsp.ebuffer + u->hsp.ebuffer_end;
         static int sn = 0;
@@ -705,8 +717,42 @@ static int hsp_process_render(struct userdata *u) {
         }
 #endif
 
+#define SAVEPCMSTREAM
+#ifdef SAVEPCMSTREAM
+ {
+         static FILE *f = NULL;
+         if (!f) {
+                 char *filename = pa_sprintf_malloc("/home/fredo/loopback.16.16k.pcm");
+                 f = fopen(filename, "w");
+                 if (f)
+                         pa_log_info("Creating %s", filename);
+                 else
+                         pa_log_error("error creating %s (%d)", filename, errno);
+                 pa_xfree(filename);
+         }
+         if (f) {
+                 fwrite(p, 1, u->write_memchunk.length, f);
+         }
+ }
+#endif
         pa_assert(u->hsp.ebuffer_end + u->hsp.msbc_frame_size <= u->hsp.ebuffer_size);
         encoded = sbc_encode(&u->hsp.sbcenc, p, u->write_memchunk.length, ((uint8_t *)u->hsp.ebuffer)+u->hsp.ebuffer_end+2, u->hsp.ebuffer_size-u->hsp.ebuffer_end-2, &written);
+{
+         static FILE *f = NULL;
+         if (!f) {
+                 char *filename = pa_sprintf_malloc("/home/fredo/loopback.msbc");
+                 f = fopen(filename, "w");
+                 if (f)
+                         pa_log_info("Creating %s", filename);
+                 else
+                         pa_log_error("error creating %s (%d)", filename, errno);
+                 pa_xfree(filename);
+         }
+         if (f) {
+                 fwrite(((uint8_t *)u->hsp.ebuffer)+u->hsp.ebuffer_end+2, 1, 57, f);
+         }
+ }
+
 #ifdef DEBUGPCMENCODING
         pa_log_debug("MSBC Encoded %d bytes to %d/%d", encoded, written, u->hsp.ebuffer_size);
 #endif
@@ -718,17 +764,20 @@ static int hsp_process_render(struct userdata *u) {
 #ifdef DEBUGPCMENCODING
         pa_log_debug("%d bytes of pending data, from %d to %d", u->hsp.ebuffer_end - u->hsp.ebuffer_start, u->hsp.ebuffer_start, u->hsp.ebuffer_end);
 #endif
-        // Send 48 bytes of it, if there is more it will send later
+        // Send MTU bytes of it, if there is more it will send later
         while (u->hsp.ebuffer_start + u->write_link_mtu <= u->hsp.ebuffer_end) {
 #ifdef DEBUGPCMENCODING
             pa_log_debug("Before sending from %d to %d", u->hsp.ebuffer_start,  u->hsp.ebuffer_start + u->write_link_mtu);
 #endif
             l = pa_write(u->stream_fd, u->hsp.ebuffer + u->hsp.ebuffer_start, u->write_link_mtu, &u->stream_write_type);
+            wrote = true;
 #ifdef DEBUGPCMENCODING
             pa_log_debug("Sent %d bytes data", l);
 #endif
-            if (l <= 0)
+            if (l <= 0) {
+                pa_log_debug("Error while writing: l %d, errno %d", l, errno);
                 break;
+            }
             u->hsp.ebuffer_start += l;
             if (u->hsp.ebuffer_start >= u->hsp.ebuffer_end)
                 u->hsp.ebuffer_start = u->hsp.ebuffer_end = 0;
@@ -741,10 +790,7 @@ static int hsp_process_render(struct userdata *u) {
 #endif
         pa_memblock_release(u->write_memchunk.memblock);
 
-#if 0
-        pa_assert(l != 0);
-
-        if (l < 0) {
+        if (wrote && l < 0) {
 
             if (errno == EINTR)
                 /* Retry right away if we got interrupted */
@@ -766,7 +812,7 @@ static int hsp_process_render(struct userdata *u) {
             ret = -1;
             break;
         }
-#endif
+
         u->write_index += (uint64_t) u->write_memchunk.length;
         pa_memblock_unref(u->write_memchunk.memblock);
         pa_memchunk_reset(&u->write_memchunk);
@@ -775,7 +821,9 @@ static int hsp_process_render(struct userdata *u) {
         break;
     }
 
+#ifdef DEBUGPCMENCODING
     pa_log_debug("%s: returning %d", __FUNCTION__, ret);
+#endif
     return ret;
 }
 
@@ -790,7 +838,6 @@ static int hsp_process_push(struct userdata *u) {
     pa_assert(u->read_smoother);
 
     u->read_block_size = u->hsp.decoded_frame_size;
-    u->read_link_mtu = 60;
     memchunk.memblock = pa_memblock_new(u->core->mempool, u->read_block_size);
     memchunk.index = memchunk.length = 0;
 
@@ -805,6 +852,7 @@ static int hsp_process_push(struct userdata *u) {
         struct iovec iov;
         bool found_tstamp = false;
         pa_usec_t tstamp;
+        int decoded = 0;
         size_t written;
         uint8_t *tmpbuf = pa_xmalloc(u->read_link_mtu);
 
@@ -836,14 +884,14 @@ static int hsp_process_push(struct userdata *u) {
         }
 
         p = pa_memblock_acquire(memchunk.memblock);
-        written = msbc_parse(&u->hsp.sbcdec, &u->hsp.parser, tmpbuf, l, p, pa_memblock_get_length(memchunk.memblock));
+        written = msbc_parse(&u->hsp.sbcdec, &u->hsp.parser, tmpbuf, l, p, pa_memblock_get_length(memchunk.memblock), &decoded);
         pa_memblock_release(memchunk.memblock);
 
         pa_xfree(tmpbuf);
 
         memchunk.length = (size_t) written;
 
-        u->read_index += (uint64_t) l;
+        u->read_index += (uint64_t) decoded;
 
         for (cm = CMSG_FIRSTHDR(&m); cm; cm = CMSG_NXTHDR(&m, cm)) {
             if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SO_TIMESTAMP) {
@@ -866,7 +914,7 @@ static int hsp_process_push(struct userdata *u) {
         if (memchunk.length > 0)
             pa_source_post(u->source, &memchunk);
 
-        ret = l;
+        ret = decoded;
         break;
     }
 
@@ -1201,13 +1249,17 @@ static void thread_func(void *userdata) {
                 else
                     n_read = a2dp_process_push(u);
 
-                if (n_read < 0)
+                if (n_read < 0) {
+                    pa_log("hsp_process_push returns %d", n_read);
                     goto io_fail;
+                }
 
                 /* We just read something, so we are supposed to write something, too */
                 pending_read_bytes += n_read;
-                do_write += pending_read_bytes / u->write_block_size;
+                do_write = 0;/* pending_read_bytes / u->write_block_size; */
+#ifdef DEBUGPCMTHREAD
                 pa_log_debug("After reading:  writable %d, do_write %d", writable, do_write);
+#endif
                 pending_read_bytes = pending_read_bytes % u->write_block_size;
             }
         }
@@ -1221,7 +1273,7 @@ static void thread_func(void *userdata) {
                 if (pollfd->revents & POLLOUT)
                     writable = true;
 
-                if ((!u->source || !PA_SOURCE_IS_LINKED(u->source->thread_info.state)) && do_write <= 0 && writable) {
+                if (/*(!u->source || !PA_SOURCE_IS_LINKED(u->source->thread_info.state)) && */do_write <= 0 && writable) {
                     pa_usec_t time_passed;
                     pa_usec_t audio_sent;
 
@@ -1263,7 +1315,9 @@ static void thread_func(void *userdata) {
                     }
                 }
 
+#ifdef DEBUGPCMTHREAD
                 pa_log_debug("IO Thread running:  writable %d, do_write %d", writable, do_write);
+#endif
                 if (writable && do_write > 0) {
                     int n_written;
 
@@ -1274,9 +1328,13 @@ static void thread_func(void *userdata) {
                         if ((n_written = a2dp_process_render(u)) < 0)
                             goto io_fail;
                     } else {
+#ifdef DEBUGPCMTHREAD
                         pa_log_debug("IO Thread before encoding:  writable %d, do_write %d", writable, do_write);
-                        if ((n_written = hsp_process_render(u)) < 0)
+#endif
+                        if ((n_written = hsp_process_render(u)) < 0) {
+                            pa_log("hsp_process_render returns %d", n_written);
                             goto io_fail;
+                        }
                     }
 
                     if (n_written == 0)
