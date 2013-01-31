@@ -1720,7 +1720,8 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     const char *sender, *path, *dev_path = NULL, *uuid = NULL;
     uint8_t *config = NULL;
     int size = 0;
-    bool nrec = false;
+    uint8_t codec = 0;
+    pa_bool_t nrec = FALSE;
     enum profile p;
     DBusMessageIter args, props;
     DBusMessage *r;
@@ -1796,15 +1797,19 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     if (!d)
         goto fail;
 
-    if (dbus_message_has_path(m, HFP_AG_CVSD_ENDPOINT))
+    if (dbus_message_has_path(m, HFP_AG_CVSD_ENDPOINT)) {
         p = PROFILE_HSP;
-    else if (dbus_message_has_path(m, HFP_HS_CVSD_ENDPOINT))
+        codec = 1;
+    } else if (dbus_message_has_path(m, HFP_HS_CVSD_ENDPOINT)) {
         p = PROFILE_HFGW;
-    else if (dbus_message_has_path(m, HFP_AG_MSBC_ENDPOINT))
+        codec = 1;
+    } else if (dbus_message_has_path(m, HFP_AG_MSBC_ENDPOINT)) {
         p = PROFILE_HSP;
-    else if (dbus_message_has_path(m, HFP_HS_MSBC_ENDPOINT))
+        codec = 2;
+    } else if (dbus_message_has_path(m, HFP_HS_MSBC_ENDPOINT)) {
         p = PROFILE_HFGW;
-    else if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT))
+        codec = 2;
+    } else if (dbus_message_has_path(m, A2DP_SOURCE_ENDPOINT))
         p = PROFILE_A2DP;
     else
         p = PROFILE_A2DP_SOURCE;
@@ -1840,6 +1845,7 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
     sender = dbus_message_get_sender(m);
 
     t = transport_new(d, sender, path, p, config, size);
+    t->codec = codec;
     if (nrec)
         t->nrec = nrec;
 
