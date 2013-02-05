@@ -115,11 +115,29 @@ struct a2dp_info {
     uint8_t max_bitpool;
 };
 
+struct msbc_parser {
+    int len;
+    uint8_t buffer[60];
+};
+
 struct hsp_info {
     pa_sink *sco_sink;
     void (*sco_sink_set_volume)(pa_sink *s);
     pa_source *sco_source;
     void (*sco_source_set_volume)(pa_source *s);
+    pa_bool_t sbc_initialized;           /* Keep track if the encoder is initialized */
+
+    sbc_t sbcenc;                        /* Coder data */
+    uint8_t *ebuffer;                        /* Codec transfer buffer */
+    size_t ebuffer_size;                  /* Size of the buffer */
+    size_t ebuffer_start;                  /* start of encoding data */
+    size_t ebuffer_end;                  /* end of encoding data */
+
+    struct msbc_parser parser;           /* mSBC parser for concatenating frames */
+    sbc_t sbcdec;                        /* Decoder data */
+
+    size_t msbc_frame_size;
+    size_t decoded_frame_size;
 };
 
 struct bluetooth_msg {
@@ -542,6 +560,97 @@ static int device_process_msg(pa_msgobject *obj, int code, void *data, int64_t o
     return 0;
 }
 
+static void msbc_parser_reset(struct msbc_parser *p) {
+    p->len = 0;
+}
+
+static int msbc_state_machine(struct msbc_parser *p, uint8_t byte) {
+    pa_assert(p->len < 60);
+
+    switch (p->len) {
+    case 0:
+        if (byte == 0x01)
+            goto copy;
+        return 0;
+    case 1:
+        if (byte == 0x08 || byte == 0x38 || byte == 0xC8 || byte == 0xF8)
+            goto copy;
+        break;
+    case 2:
+        if (byte == 0xAD)
+            goto copy;
+        break;
+    case 3:
+        if (byte == 0x00)
+            goto copy;
+        break;
+    case 4:
+        if (byte == 0x00)
+            goto copy;
+        break;
+    default:
+        goto copy;
+    }
+
+    p->len = 0;
+    return 0;
+
+copy:
+    p->buffer[p->len] = byte;
+    p->len ++;
+
+    return p->len;
+}
+
+static size_t msbc_parse(sbc_t *sbcdec, struct msbc_parser *p, uint8_t *data, int len, uint8_t *out, int outlen, int *bytes) {
+    size_t totalwritten = 0;
+    size_t written = 0;
+    int i;
+    *bytes = 0;
+
+    for (i = 0; i < len; i++) {
+        if (msbc_state_machine(p, data[i]) == 60) {
+            int decoded = 0;
+            decoded = sbc_decode(sbcdec, p->buffer + 2, p->len - 2 - 1, out, outlen, &written);
+            if (decoded > 0) {
+                totalwritten += written;
+                *bytes += decoded;
+            } else {
+                pa_log_debug("Error while decoding: %d\n", decoded);
+            }
+            msbc_parser_reset(p);
+        }
+    }
+    return totalwritten;
+}
+
+/* Run from IO thread */
+static void hsp_prepare_buffer(struct userdata *u) {
+
+    pa_assert(u);
+
+    /* Initialize sbc codec if not already done */
+    if (!u->hsp.sbc_initialized) {
+        sbc_init_msbc(&u->hsp.sbcenc, 0);
+        sbc_init_msbc(&u->hsp.sbcdec, 0);
+        u->hsp.msbc_frame_size = 2 + sbc_get_frame_length(&u->hsp.sbcenc) + 1;
+        u->hsp.decoded_frame_size = sbc_get_codesize(&u->hsp.sbcenc);
+        u->hsp.sbc_initialized = TRUE;
+        msbc_parser_reset(&u->hsp.parser);
+    }
+
+    /* Allocate a buffer for encoding, and a tmp buffer for sending */
+    if (u->hsp.ebuffer_size < u->hsp.msbc_frame_size) {
+        pa_xfree(u->hsp.ebuffer);
+        u->hsp.ebuffer_size = u->hsp.msbc_frame_size * 4; /* 5 * 48 = 10 * 24 = 4 * 60 */
+        u->hsp.ebuffer = pa_xmalloc(u->hsp.ebuffer_size);
+        u->hsp.ebuffer_start = 0;
+        u->hsp.ebuffer_end = 0;
+    }
+}
+
+static const char sntable[4] = { 0x08, 0x38, 0xC8, 0xF8 };
+
 /* Run from IO thread */
 static int hsp_process_render(struct userdata *u) {
     int ret = 0;
@@ -605,6 +714,95 @@ static int hsp_process_render(struct userdata *u) {
 
     return ret;
 }
+
+/* Run from IO thread */
+static int hsp_process_render_msbc(struct userdata *u) {
+    int ret = 0;
+
+    pa_assert(u);
+    pa_assert(u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW);
+    pa_assert(u->sink);
+
+    hsp_prepare_buffer(u);
+
+    /* First, render some data */
+    if (!u->write_memchunk.memblock)
+        pa_sink_render_full(u->sink, u->hsp.decoded_frame_size, &u->write_memchunk);
+
+    for (;;) {
+        int l = 0;
+        pa_bool_t wrote = false;
+        const uint8_t *p;
+        size_t written = 0;
+        uint8_t *h2 = u->hsp.ebuffer + u->hsp.ebuffer_end;
+        static int sn = 0;
+
+        /* Now write that data to the socket. The socket is of type
+         * SEQPACKET, and we generated the data of the MTU size, so this
+         * should just work. */
+
+        p = (const uint8_t *) pa_memblock_acquire_chunk(&u->write_memchunk);
+        h2[0] = 0x01;
+        h2[1] = sntable[sn];
+        h2[59] = 0xff;
+        sn = (sn + 1) % 4;
+
+        pa_assert(u->hsp.ebuffer_end + u->hsp.msbc_frame_size <= u->hsp.ebuffer_size);
+        sbc_encode(&u->hsp.sbcenc, p, u->write_memchunk.length, ((uint8_t *)u->hsp.ebuffer)+u->hsp.ebuffer_end+2, u->hsp.ebuffer_size-u->hsp.ebuffer_end-2, (ssize_t *)&written);
+
+        written += 2 /* H2 */ + 1 /* 0xff */;
+        pa_assert(written == u->hsp.msbc_frame_size);
+        u->hsp.ebuffer_end += written;
+
+        /* Send MTU bytes of it, if there is more it will send later */
+        while (u->hsp.ebuffer_start + u->write_link_mtu <= u->hsp.ebuffer_end) {
+            l = pa_write(u->stream_fd, u->hsp.ebuffer + u->hsp.ebuffer_start, u->write_link_mtu, &u->stream_write_type);
+            wrote = true;
+            if (l <= 0) {
+                pa_log_debug("Error while writing: l %d, errno %d", l, errno);
+                break;
+            }
+            u->hsp.ebuffer_start += l;
+            if (u->hsp.ebuffer_start >= u->hsp.ebuffer_end)
+                u->hsp.ebuffer_start = u->hsp.ebuffer_end = 0;
+        }
+
+        pa_memblock_release(u->write_memchunk.memblock);
+
+        if (wrote && l < 0) {
+
+            if (errno == EINTR)
+                /* Retry right away if we got interrupted */
+                continue;
+
+            else if (errno == EAGAIN)
+                /* Hmm, apparently the socket was not writable, give up for now */
+                break;
+
+            pa_log_error("Failed to write data to SCO socket: %s", pa_cstrerror(errno));
+            ret = -1;
+            break;
+        }
+
+        if ((size_t) l != (size_t)u->write_link_mtu) {
+            pa_log_error("Wrote memory block to socket only partially! %llu written, wanted to write %llu.",
+                        (unsigned long long) l,
+                        (unsigned long long) u->write_link_mtu);
+            ret = -1;
+            break;
+        }
+
+        u->write_index += (uint64_t) u->write_memchunk.length;
+        pa_memblock_unref(u->write_memchunk.memblock);
+        pa_memchunk_reset(&u->write_memchunk);
+
+        ret = 1;
+        break;
+    }
+
+    return ret;
+}
+
 
 /* Run from IO thread */
 static int hsp_process_push(struct userdata *u) {
@@ -695,6 +893,102 @@ static int hsp_process_push(struct userdata *u) {
         pa_source_post(u->source, &memchunk);
 
         ret = l;
+        break;
+    }
+
+    pa_memblock_unref(memchunk.memblock);
+
+    return ret;
+}
+
+/* Run from IO thread */
+static int hsp_process_push_msbc(struct userdata *u) {
+    int ret = 0;
+    pa_memchunk memchunk;
+
+    pa_assert(u);
+    pa_assert(u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW);
+    pa_assert(u->source);
+    pa_assert(u->read_smoother);
+
+    u->read_block_size = u->hsp.decoded_frame_size;
+    memchunk.memblock = pa_memblock_new(u->core->mempool, u->read_block_size);
+    memchunk.index = memchunk.length = 0;
+
+    hsp_prepare_buffer(u);
+
+    for (;;) {
+        ssize_t l;
+        void *p;
+        struct msghdr m;
+        struct cmsghdr *cm;
+        uint8_t aux[1024];
+        struct iovec iov;
+        bool found_tstamp = false;
+        pa_usec_t tstamp;
+        int decoded = 0;
+        size_t written;
+        uint8_t *tmpbuf = pa_xmalloc(u->read_link_mtu);
+
+        memset(&m, 0, sizeof(m));
+        memset(&aux, 0, sizeof(aux));
+        memset(&iov, 0, sizeof(iov));
+
+        m.msg_iov = &iov;
+        m.msg_iovlen = 1;
+        m.msg_control = aux;
+        m.msg_controllen = sizeof(aux);
+
+        iov.iov_base = tmpbuf;
+        iov.iov_len = u->read_link_mtu;
+        l = recvmsg(u->stream_fd, &m, 0);
+        if (l <= 0) {
+
+            if (l < 0 && errno == EINTR)
+                /* Retry right away if we got interrupted */
+                continue;
+
+            else if (l < 0 && errno == EAGAIN)
+                /* Hmm, apparently the socket was not readable, give up for now. */
+                break;
+
+            pa_log_error("Failed to read data from SCO socket: %s", l < 0 ? pa_cstrerror(errno) : "EOF");
+            ret = -1;
+            break;
+        }
+
+        p = pa_memblock_acquire(memchunk.memblock);
+        written = msbc_parse(&u->hsp.sbcdec, &u->hsp.parser, tmpbuf, l, p, pa_memblock_get_length(memchunk.memblock), &decoded);
+        pa_memblock_release(memchunk.memblock);
+
+        pa_xfree(tmpbuf);
+
+        memchunk.length = (size_t) written;
+
+        u->read_index += (uint64_t) decoded;
+
+        for (cm = CMSG_FIRSTHDR(&m); cm; cm = CMSG_NXTHDR(&m, cm)) {
+            if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SO_TIMESTAMP) {
+                struct timeval *tv = (struct timeval*) CMSG_DATA(cm);
+                pa_rtclock_from_wallclock(tv);
+                tstamp = pa_timeval_load(tv);
+                found_tstamp = true;
+                break;
+            }
+        }
+
+        if (!found_tstamp) {
+            pa_log_warn("Couldn't find SO_TIMESTAMP data in auxiliary recvmsg() data!");
+            tstamp = pa_rtclock_now();
+        }
+
+        pa_smoother_put(u->read_smoother, tstamp, pa_bytes_to_usec(u->read_index, &u->sample_spec));
+        pa_smoother_resume(u->read_smoother, tstamp, true);
+
+        if (memchunk.length > 0)
+            pa_source_post(u->source, &memchunk);
+
+        ret = decoded;
         break;
     }
 
@@ -1024,9 +1318,16 @@ static void thread_func(void *userdata) {
             if (pollfd && (pollfd->revents & POLLIN)) {
                 int n_read;
 
-                if (u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW)
-                    n_read = hsp_process_push(u);
-                else
+                if (u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW) {
+                    if (u->transport->codec == 1)
+                        n_read = hsp_process_push(u);
+                    else if (u->transport->codec == 2)
+                        n_read = hsp_process_push_msbc(u);
+                    else {
+                        pa_log_debug("Invalid codec for encoding %d", u->transport->codec);
+                        n_read = -1;
+                    }
+                } else
                     n_read = a2dp_process_push(u);
 
                 if (n_read < 0)
@@ -1048,7 +1349,9 @@ static void thread_func(void *userdata) {
                 if (pollfd->revents & POLLOUT)
                     writable = true;
 
-                if ((!u->source || !PA_SOURCE_IS_LINKED(u->source->thread_info.state)) && do_write <= 0 && writable) {
+                /* mSBC: Force time based scheduling for outgoing packets */
+                /* This is necessary for mSBC because one pushed PCM frame != one sent mSBC frame */
+                if (u->transport->codec == 2 || (do_write <= 0 && writable)) {
                     pa_usec_t time_passed;
                     pa_usec_t audio_sent;
 
@@ -1100,8 +1403,16 @@ static void thread_func(void *userdata) {
                         if ((n_written = a2dp_process_render(u)) < 0)
                             goto io_fail;
                     } else {
-                        if ((n_written = hsp_process_render(u)) < 0)
-                            goto io_fail;
+                        if (u->transport->codec == 1) {
+                            if ((n_written = hsp_process_render(u)) < 0)
+                                goto io_fail;
+                        } else if (u->transport->codec == 2) {
+                            if ((n_written = hsp_process_render_msbc(u)) < 0)
+                                goto io_fail;
+                        } else {
+                            n_written = -1;
+                            pa_log_debug("Invalid codec for encoding %d", u->transport->codec);
+                        }
                     }
 
                     if (n_written == 0)
@@ -1797,7 +2108,10 @@ static void bt_transport_config(struct userdata *u) {
     if (u->profile == PROFILE_HSP || u->profile == PROFILE_HFGW) {
         u->sample_spec.format = PA_SAMPLE_S16LE;
         u->sample_spec.channels = 1;
-        u->sample_spec.rate = 8000;
+        if (u->transport->codec == 1)
+            u->sample_spec.rate = 8000;
+        else
+            u->sample_spec.rate = 16000;
     } else
         bt_transport_config_a2dp(u);
 }
