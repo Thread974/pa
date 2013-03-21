@@ -1001,19 +1001,15 @@ AX_DEFINE_DIR(PA_MACHINE_ID_FALLBACK, PA_MACHINE_ID_FALLBACK,
 #### BlueZ support (optional, dependant on D-Bus) ####
 
 AC_ARG_ENABLE([bluez],
-    AS_HELP_STRING([--disable-bluez],[Disable optional BlueZ support]))
+    AS_HELP_STRING([--disable-bluez],[Disable optional Bluetooth support]))
 
 AS_IF([test "x$enable_bluez" != "xno"],
-    [PKG_CHECK_MODULES(BLUEZ, [ bluez >= 4.99 ], HAVE_BLUEZ=1, HAVE_BLUEZ=0)],
+    [PKG_CHECK_MODULES(SBC, [ sbc >= 1.0 ], HAVE_BLUEZ=1, HAVE_BLUEZ=0)],
     HAVE_BLUEZ=0)
-AS_IF([test "x$enable_bluez" != "xno"],
-    [PKG_CHECK_MODULES(SBC, [ sbc >= 1.0 ], HAVE_SBC=1, HAVE_SBC=0)],
-    HAVE_SBC=0)
-AS_IF([test "x$HAVE_SBC" != "x1"], HAVE_BLUEZ=0)
 AS_IF([test "x$HAVE_DBUS" != "x1"], HAVE_BLUEZ=0)
 
 AS_IF([test "x$enable_bluez" = "xyes" && test "x$HAVE_BLUEZ" = "x0"],
-    [AC_MSG_ERROR([*** BLUEZ support not found (requires BlueZ, sbc, and D-Bus)])])
+    [AC_MSG_ERROR([*** BLUEZ support not found (requires sbc and D-Bus)])])
 
 AC_SUBST(BLUEZ_CFLAGS)
 AC_SUBST(BLUEZ_LIBS)

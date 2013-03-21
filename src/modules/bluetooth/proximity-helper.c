@@ -48,6 +48,16 @@
 #define TIMEOUT 4
 #define INTERVAL 2
 
+int str2ba(const char *str, bdaddr_t *ba)
+{
+    int i;
+
+    for (i = 5; i >= 0; i--, str += 3)
+        ba->b[i] = strtol(str, NULL, 16);
+
+    return 0;
+}
+
 static void update_status(int found) {
     static int status = -1;
 
